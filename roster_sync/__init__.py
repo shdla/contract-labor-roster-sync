@@ -2,6 +2,10 @@
 
 from .credentials import Credential, CredentialStatus, EligibilityReport, Verdict, build_report, evaluate
 from .diff import compute_diff
+from .events import (
+    DeliveryError, Event, EmitOutcome, InMemoryEventSender, WebhookEventSender,
+    emit_diff, event_id, events_for_diff, worker_joined_event,
+)
 from .hours import HoursRecord, ReconciliationReport, read_agency_report, read_punch_log, read_site_feed, reconcile
 from .provisioning import HttpProvisioner, InMemoryProvisioner, OAuthClientCredentials, ProvisioningError, SyncOutcome, sync_access
 from .identity import WorkerRegistry
@@ -18,6 +22,8 @@ __all__ = [
     "build_report",
     "evaluate",
     "compute_diff",
+    "DeliveryError", "Event", "EmitOutcome", "InMemoryEventSender", "WebhookEventSender",
+    "emit_diff", "event_id", "events_for_diff", "worker_joined_event",
     "HoursRecord", "ReconciliationReport", "read_agency_report", "read_punch_log", "read_site_feed", "reconcile",
     "HttpProvisioner", "InMemoryProvisioner", "OAuthClientCredentials", "ProvisioningError", "SyncOutcome", "sync_access",
     "WorkerRegistry",
