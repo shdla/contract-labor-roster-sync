@@ -1,11 +1,15 @@
-# Contract Labour Roster Sync
+# Contract Labor Roster Sync
 
-Ingest, identity resolution and change detection for a contingent workforce
-roster delivered as a weekly spreadsheet.
+Onboarding, credentialing, site-access provisioning and payroll
+reconciliation for a contingent workforce whose only system of record is a
+weekly spreadsheet.
+
+Python · SQLite · OAuth 2.0 client credentials · REST · idempotent sync ·
+three-way data reconciliation · 65 tests
 
 ## Scenario
 
-A construction and installation programme inside a live fulfilment centre
+A construction and installation program inside a live fulfillment center
 took on an additional scope requiring roughly eighty material handlers and
 pod production workers, sourced through a single staffing agency. The agency
 delivered a weekly Excel roster containing five columns: first name, last
@@ -75,7 +79,7 @@ to that worker permanently, so the same row matches on a strong signal next
 week and never reaches the queue again. Rejecting creates a second worker
 deliberately, with the same effect. A queue that cannot be cleared is an
 alert, and people stop reading alerts. Decisions record who made them and
-when, because deactivating somebody's site access on a judgement call is the
+when, because deactivating somebody's site access on a judgment call is the
 kind of thing that gets asked about later.
 
 **The eligibility gate blocks on uncertainty.** A worker whose role could
@@ -107,8 +111,8 @@ grant, and swap the adapter when better access lands.
 **Hours are reconciled three ways, not two.** Two sources show that the
 numbers disagree; three show which one is wrong. Agency over-reporting,
 hours claimed that nobody recorded, and presence at the work area that never
-badged at the gate are distinguishable readings rather than one undifferen-
-tiated variance. Day-level detail sits beneath the pay-period totals, so a
+badged at the gate are distinguishable readings rather than one undifferentiated
+variance. Day-level detail sits beneath the pay-period totals, so a
 dispute can be named to a date instead of argued as a total.
 
 **Identifier ownership is enforced by the database.** The primary key on
@@ -123,7 +127,7 @@ reactivates under the original identifier, preserving credential history.
 **Role mapping and header spellings live in configuration.** The agency
 writes `Material Handler`, `material handler` and `MH` in different weeks.
 Adding a spelling is a change to `config/roles.yaml`, not to code. An
-unrecognised role returns `None` and surfaces as an exception rather than
+unrecognized role returns `None` and surfaces as an exception rather than
 defaulting to the least-privileged role.
 
 **Normalization refuses rather than guesses.** A phone of the wrong length,
@@ -145,7 +149,7 @@ roster_sync/
   provisioning.py access-system adapters, OAuth client, idempotent sync
   hours.py       three-way hours reconciliation and source adapters
 config/roles.yaml    role aliases and per-role credential requirements
-samples/             generator for deliberately messy sample workbooks
+samples/             sample-data generators and an end-to-end demo
 tests/               65 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning and reconciliation
@@ -157,7 +161,7 @@ nothing about it, so the matching logic stays testable in memory.
 ## Running it
 
 ```bash
-pip install openpyxl pyyaml pytest
+pip install -r requirements.txt        # Python 3.10 or newer
 python samples/make_samples.py        # generate messy sample workbooks
 python samples/make_hours_samples.py  # generate the agency hours file
 python -m pytest tests/ -q            # 65 tests
@@ -167,6 +171,70 @@ python samples/run_pipeline.py        # end-to-end walkthrough
 `run_pipeline.py` processes two roster files, grants credentials, runs the
 eligibility gate, provisions access twice to show the second run making no
 calls, and reconciles a pay period across three hours sources.
+
+## Sample run
+
+A name typo in week two matches on phone and updates the existing record
+rather than creating a duplicate worker. The eligibility gate blocks one
+worker with the reason stated. Provisioning makes seven API calls on the
+first run and none on the rerun. The reconciliation distinguishes hours the
+agency over-reported from hours worked at the work area that were never
+badged at the gate.
+
+Output of `python samples/run_pipeline.py`:
+
+```
+====================================================================
+1. Roster ingest and identity resolution
+====================================================================
+
+roster_week1.xlsx  header row 3  7 rows  rerun=False
+  {'joiners': 6, 'leavers': 0, 'changed': 0, 'unchanged': 0, 'review': 0, 'rejected': 1}
+    JOINER  Marcus Webb            material_handler
+    JOINER  Danielle Okonkwo       pod_production
+    JOINER  Ray Villanueva         forklift_operator
+    JOINER  Tomas Ruiz             material_handler
+    JOINER  Priya Raghunathan      buckhoist_operator
+    JOINER  Curtis Delaney         material_handler
+
+roster_week2.xlsx  header row 3  8 rows  rerun=False
+  {'joiners': 2, 'leavers': 0, 'changed': 3, 'unchanged': 2, 'review': 0, 'rejected': 1}
+    JOINER  Alicia Fontenot        pod_production
+    JOINER  Jerome Baptiste        forklift_operator
+    CHANGED Marcuss Webb           name Marcus Webb -> Marcuss Webb
+    CHANGED Danielle Okonkwo       phone added +18325550301
+    CHANGED Curtis Delaney         phone added +18325550266
+
+====================================================================
+2. Credentials granted
+====================================================================
+  17 credential records
+
+====================================================================
+3. Eligibility gate
+====================================================================
+  {'cleared': 7, 'blocked': 1, 'warnings': 1}
+
+  BLOCKED  Jerome Baptiste          ppe_issued missing, forklift_certification missing
+  CLEARED  Priya Raghunathan        warning: buckhoist_training expires 2024-07-24
+
+====================================================================
+4. Access provisioning
+====================================================================
+  first run:  {'activated': 7, 'deactivated': 1, 'unchanged': 0, 'failed': 0}   api calls: 7
+  rerun:      {'activated': 0, 'deactivated': 0, 'unchanged': 8, 'failed': 0}   api calls: 7
+
+====================================================================
+5. Three-way hours reconciliation
+====================================================================
+  {'workers': 2, 'clean': 1, 'disputed': 1, 'agency_hours': 32.0, 'scanner_hours': 30.0, 'over_reported_hours': 2.0, 'unresolved_rows': 1}
+
+  Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
+  Alicia Fontenot        agency 16.00  scanner 14.00  site  6.03
+      2024-07-15  present but not badged at site  (agency 8.0, scanner 8.0, site 0.0)
+      2024-07-16  agency over-reported  (agency 8.0, scanner 6.0, site 6.03)
+  UNRESOLVED [site] badge BADGE-UNKNOWN not mapped
+```
 
 ## Spreadsheet defects handled
 
@@ -185,4 +253,3 @@ escalation are deliberately out of scope for this repository. Credential
 *state* belongs here; credential *scheduling and messaging* belongs in the
 companion iPaaS project, where retry and multi-day reminder sequences are
 solved problems rather than something to hand-roll.
-# contract-labor-roster-sync
