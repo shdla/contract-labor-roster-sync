@@ -4,8 +4,8 @@ Onboarding, credentialing, site-access provisioning and payroll
 reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
-Python · SQLite · OAuth 2.0 client credentials · REST · idempotent sync ·
-three-way data reconciliation · 65 tests
+Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
+idempotent sync · three-way data reconciliation · 78 tests
 
 ## Scenario
 
@@ -148,11 +148,13 @@ roster_sync/
   credentials.py credential records and the eligibility gate
   provisioning.py access-system adapters, OAuth client, idempotent sync
   hours.py       three-way hours reconciliation and source adapters
+  events.py      signed, deduplicable webhook emission to the iPaaS
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators and an end-to-end demo
-tests/               65 tests covering normalization, matching, diffing,
+tests/               78 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
-                     eligibility gate, provisioning and reconciliation
+                     eligibility gate, provisioning, reconciliation and
+                     event emission
 ```
 
 Storage sits behind `store.py` alone: `identity.py` and `diff.py` know
@@ -164,7 +166,7 @@ nothing about it, so the matching logic stays testable in memory.
 pip install -r requirements.txt        # Python 3.10 or newer
 python samples/make_samples.py        # generate messy sample workbooks
 python samples/make_hours_samples.py  # generate the agency hours file
-python -m pytest tests/ -q            # 65 tests
+python -m pytest tests/ -q            # 78 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 ```
 
@@ -248,8 +250,21 @@ appearing intermittently, and `Last, First` collapsed into one cell.
 
 ## Scope boundary
 
-Nothing from the original scope remains unbuilt. Orientation scheduling, PPE and training notifications, reminders and
-escalation are deliberately out of scope for this repository. Credential
-*state* belongs here; credential *scheduling and messaging* belongs in the
-companion iPaaS project, where retry and multi-day reminder sequences are
-solved problems rather than something to hand-roll.
+Nothing from the original scope remains unbuilt. Orientation scheduling, PPE
+and training notifications, reminders and escalation are deliberately out of
+scope for this repository. Credential *state* belongs here; credential
+*scheduling and messaging* belongs in the companion iPaaS project (Workato),
+where retry and multi-day reminder sequences are solved problems rather than
+something to hand-roll.
+
+`events.py` is the boundary itself. A joiner detected in this repository
+becomes a `worker.joined` webhook delivery: HMAC-SHA256-signed, and carrying
+a dedup id that is a UUIDv5 of `(event type, worker id, roster period)`
+rather than a random value, so a retried delivery — this side treats
+delivery as at-least-once — reproduces the same id instead of minting a new
+one. The receiving recipe reacts to that id being new or repeated; nothing
+about *how* it reacts (which lookup table, what the notification says, where
+the error monitor wraps) is decided in Python. That split is deliberate: an
+agency roster is miserable to parse and reconcile as recipe steps, and
+notification retry/escalation sequencing is a solved problem in an iPaaS
+that would be tedious to hand-roll here.
