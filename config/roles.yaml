@@ -1,0 +1,25 @@
+# Free-text role spellings mapped to canonical role codes, and the
+# credentials each canonical role requires before a worker may be cleared.
+#
+# Adding a spelling the agency starts using is a change here, not in code.
+
+aliases:
+  material handler: material_handler
+  materials handler: material_handler
+  mh: material_handler
+  handler: material_handler
+  pod production: pod_production
+  pod prod: pod_production
+  pod: pod_production
+  forklift operator: forklift_operator
+  forklift: forklift_operator
+  pit operator: forklift_operator
+  buckhoist operator: buckhoist_operator
+  buck hoist operator: buckhoist_operator
+  hoist operator: buckhoist_operator
+
+requirements:
+  material_handler: [safety_orientation, ppe_issued]
+  pod_production: [safety_orientation, ppe_issued]
+  forklift_operator: [safety_orientation, ppe_issued, forklift_certification]
+  buckhoist_operator: [safety_orientation, ppe_issued, buckhoist_training]
