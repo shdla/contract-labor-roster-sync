@@ -185,3 +185,4 @@ escalation are deliberately out of scope for this repository. Credential
 *state* belongs here; credential *scheduling and messaging* belongs in the
 companion iPaaS project, where retry and multi-day reminder sequences are
 solved problems rather than something to hand-roll.
+# contract-labor-roster-sync
