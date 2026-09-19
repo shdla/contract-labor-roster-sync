@@ -72,6 +72,37 @@ def test_newly_blocked_worker_is_revoked_once(populated):
     assert prov.calls[-1] == ("deactivate", ruiz.worker_id)
     assert ruiz.worker_id not in prov.active
 
+    calls = len(prov.calls)
+    again = sync_access(report, store, prov)
+    assert len(prov.calls) == calls, "revoked once, not once per run"
+    assert ruiz.worker_id in again.unchanged
+
+
+def test_leaver_is_revoked_through_inactive_and_only_once(populated):
+    store, registry, ruiz, fontenot = populated
+    store.grant_credential(Credential(fontenot.worker_id, "ppe_issued", D1))
+    prov = InMemoryProvisioner()
+    sync_access(build_report(registry.workers, store.all_credentials(), REQ, D1), store, prov)
+    state, original_ref = store.access_state(fontenot.worker_id)
+    assert state == "active"
+
+    # Two further roster periods without her; the second makes her a leaver.
+    still_here = [row("Tomas", "Ruiz", "8325550214", "tr@example.com")]
+    compute_diff(registry, still_here, D2)
+    diff = compute_diff(registry, still_here, D3)
+    assert diff.leavers == [fontenot]
+
+    # build_report skips inactive workers, so `inactive` is the only route to her badge.
+    report = build_report(registry.workers, store.all_credentials(), REQ, D3)
+    outcome = sync_access(report, store, prov, inactive=diff.leavers)
+    assert outcome.deactivated == [fontenot.worker_id]
+    assert prov.calls[-1] == ("deactivate", fontenot.worker_id)
+    assert store.access_state(fontenot.worker_id) == ("revoked", original_ref)
+
+    calls = len(prov.calls)
+    sync_access(report, store, prov, inactive=diff.leavers)
+    assert len(prov.calls) == calls, "a rerun does not revoke her again"
+
 
 def test_failure_on_one_worker_does_not_stop_the_others(populated):
     store, registry, ruiz, fontenot = populated
@@ -158,6 +189,39 @@ def test_http_provisioner_gives_up_after_max_attempts(populated):
         prov.activate(ruiz)
 
 
+def http_provisioner(session, **kw):
+    return HttpProvisioner("https://access.example/api",
+                           OAuthClientCredentials("https://access.example/token", "id", "secret"),
+                           session, sleep=lambda _: None, **kw)
+
+
+def test_http_deactivate_deletes_by_external_ref_and_accepts_404(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(204), FakeResponse(404)])
+    prov = http_provisioner(session)
+    prov.deactivate(ruiz, "B-1")
+    prov.deactivate(ruiz, "B-1")  # already gone at the access system: the wanted state, not an error
+
+    deletes = [r for r in session.requests if r[0] == "delete"]
+    assert [d[1] for d in deletes] == ["https://access.example/api/access/grants/B-1"] * 2
+    assert [d[2]["headers"].get("Idempotency-Key") for d in deletes] == [ruiz.worker_id] * 2
+
+
+def test_http_deactivate_without_an_external_ref_makes_no_request(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([])
+    http_provisioner(session).deactivate(ruiz, None)
+    assert session.requests == [], "nothing was granted, so not even a token is fetched"
+
+
+def test_http_deactivate_gives_up_after_max_attempts(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(500)] * 4)
+    with pytest.raises(ProvisioningError):
+        http_provisioner(session, max_attempts=4).deactivate(ruiz, "B-1")
+    assert sum(1 for r in session.requests if r[0] == "delete") == 4
+
+
 # -- hours ----------------------------------------------------------------
 
 
@@ -191,9 +255,35 @@ def test_without_a_site_feed_two_way_still_works():
     assert report.workers[0].days[0].reading == "agency over-reported"
 
 
+@pytest.mark.parametrize("agency,scanner,site,reading", [
+    (6, 8, 8, "agency under-reported"),
+    (8, 6, 4, "mixed variance"),
+])
+def test_three_way_under_reported_and_mixed_variance(agency, scanner, site, reading):
+    report = reconcile([rec(AGENCY, "w", D1, agency)], [rec(SCANNER, "w", D1, scanner)],
+                       [rec(SITE, "w", D1, site)], D1, D1)
+    assert report.workers[0].days[0].reading == reading
+
+
+def test_split_shift_punches_sum_and_days_outside_the_period_are_excluded():
+    agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8), rec(AGENCY, "w", D3, 8)]
+    # Out for lunch and back in is two punch pairs on one day.
+    scanner = [rec(SCANNER, "w", D2, 4), rec(SCANNER, "w", D2, 4)]
+    worker = reconcile(agency, scanner, None, D2, D2).workers[0]
+
+    assert [(d.day, d.agency, d.scanner, d.reading) for d in worker.days] == [(D2, 8, 8, "clean")]
+    assert (worker.agency, worker.scanner) == (8, 8), "D1 and D3 are outside the period"
+
+
 def test_tolerance_absorbs_rounding():
-    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, 7.8)], None, D1, D1, tolerance_hours=0.25)
+    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, 7.8)], None, D1, D1)
     assert report.workers[0].clean
+
+
+@pytest.mark.parametrize("scanner,clean", [(7.75, True), (7.74, False)])
+def test_tolerance_boundary_is_inclusive(scanner, clean):
+    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, scanner)], None, D1, D1)
+    assert report.workers[0].clean is clean
 
 
 def test_agency_rows_resolve_through_registry_and_unknowns_are_not_guessed(tmp_path, populated):
@@ -209,6 +299,19 @@ def test_agency_rows_resolve_through_registry_and_unknowns_are_not_guessed(tmp_p
     assert [r.worker_id for r in records] == [ruiz.worker_id] * 2
     assert records[1].hours == 8.5
     assert len(unresolved) == 1 and "new" in unresolved[0].reason
+
+
+def test_agency_row_matching_on_name_alone_is_given_no_hours(tmp_path, populated):
+    _, registry, _, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Tomas,Ruiz,832-555-0999,,2024-07-15,8\n"
+    )
+    # Same rule as the roster: a name is not enough to attribute invoice hours to a person.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert records == []
+    assert [(u.line, u.reason) for u in unresolved] == [(2, "identity weak_name")]
 
 
 def test_punch_log_computes_hours_and_flags_missing_out(tmp_path):
