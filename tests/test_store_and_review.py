@@ -198,6 +198,37 @@ def test_confirming_merges_identifiers_so_the_flag_never_returns(store):
     assert len(registry.workers) == 1
 
 
+def test_married_name_goes_to_review_and_confirming_makes_the_row_strong_across_a_restart(tmp_path):
+    path = tmp_path / "roster.db"
+    married = row("Danielle", "Smith", "832.555.0178")
+    with Store(path) as first:
+        registry = first.load_registry()
+        compute_diff(registry, [row("Danielle", "Okonkwo", "832.555.0178")], WEEK_1)
+        first.save_registry(registry)
+        (danielle,) = registry.workers
+
+        # Her phone, but a whole part of the name changed. It reads the same
+        # as a relative on her phone, so a human says which.
+        diff = compute_diff(registry, [married], WEEK_2)
+        assert diff.summary()["review"] == 1
+        assert danielle.name.display == "Danielle Okonkwo"
+        (review_id,) = first.save_reviews(diff.review, WEEK_2)
+        assert "against Danielle Okonkwo" in first.get_review(review_id).describe(registry)
+
+        resolution = confirm(first, registry, review_id, danielle.worker_id, decided_by="a.diaz")
+        assert resolution.changes == ["name Danielle Okonkwo -> Danielle Smith"]
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        assert [(w.worker_id, w.name.display) for w in reloaded.workers] == [
+            (danielle.worker_id, "Danielle Smith")]
+
+        # The decision changed the data, so the same row is a strong match next week.
+        assert reloaded.match(married).confidence is MatchConfidence.STRONG_PHONE
+        third = compute_diff(reloaded, [married], WEEK_3)
+        assert (third.summary()["review"], third.summary()["unchanged"]) == (0, 1)
+
+
 def test_confirming_dates_the_sighting_to_the_period_that_carried_the_row(store):
     registry = store.load_registry()
     compute_diff(registry, [row("Curtis", "Delaney", "832.555.0266")], WEEK_1)

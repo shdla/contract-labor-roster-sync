@@ -9,7 +9,11 @@ Design rules:
 
 1. Never derive the worker_id from source values. Names and phones change;
    an identifier derived from them changes with them and breaks idempotency.
-2. Auto-merge only on strong, unique signals (phone or email).
+2. Auto-merge only on a strong, unique signal (phone or email), and only
+   when the row's name is compatible with the stored one: one part identical,
+   the other a typo away. A phone is shared or reissued more often than a
+   person changes a whole name, so any other name on a held identifier is
+   escalated.
 3. A name-only match is a suggestion for a human, never an automatic merge.
 4. When a strong signal points at one worker and the name points at another,
    that is a conflict and is escalated rather than resolved by precedence.
@@ -106,6 +110,21 @@ class WorkerRegistry:
                     note=(
                         f"contact identifier matches {worker.name.display} "
                         f"but the name matches a different worker"
+                    ),
+                )
+            # A typo is applied; any other name on a known identifier is a
+            # second person (household phone, dispatch address, recycled
+            # number) or a rename only a human can vouch for. The worker rides
+            # on the flag, so the flagged period still counts as a sighting.
+            if not worker.name.compatible_with(row.name):
+                return MatchResult(
+                    row=row,
+                    confidence=MatchConfidence.CONFLICT,
+                    worker=worker,
+                    candidates=[worker],
+                    note=(
+                        f"contact identifier matches {worker.name.display} "
+                        f"but the name is not compatible with it"
                     ),
                 )
             confidence = MatchConfidence.STRONG_PHONE if phone_hit else MatchConfidence.STRONG_EMAIL

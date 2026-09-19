@@ -415,6 +415,19 @@ def test_agency_row_matching_on_name_alone_is_given_no_hours(tmp_path, populated
     assert [(u.line, u.reason) for u in unresolved] == [(2, "identity weak_name")]
 
 
+def test_agency_row_with_an_incompatible_name_on_a_held_phone_is_given_no_hours(tmp_path, populated):
+    _, registry, _, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Maria,Ruiz,(832) 555-0214,,2024-07-15,8\n"
+    )
+    # Same rule as the roster: Tomas's phone does not make Maria's hours his.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert records == []
+    assert [(u.line, u.reason) for u in unresolved] == [(2, "identity conflict")]
+
+
 def test_short_agency_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path, populated):
     _, registry, ruiz, _ = populated
     csv_path = tmp_path / "agency.csv"

@@ -114,6 +114,27 @@ def test_middle_name_does_not_change_identity():
     assert normalize_name("Marcus James", "Webb") == normalize_name("Marcus", "Webb")
 
 
+@pytest.mark.parametrize(
+    "stored, written, compatible",
+    [
+        (("Marcus", "Webb"), ("Marcus", "Webb"), True),
+        (("Marcus", "Webb"), ("Marcuss", "Webb"), True),    # a letter doubled: one edit
+        (("Marcus", "Webb"), ("Macrus", "Webb"), True),     # two letters swapped: two edits
+        (("Marcus", "Webb"), ("Marcus", "Wibbs"), True),    # two edits, in the last name
+        (("Marcus", "Webb"), ("Marcus", "Wibbsy"), False),  # three edits
+        (("Marcus", "Webb"), ("Mar", "Webb"), False),       # three letters dropped
+        (("Marcus", "Webb"), ("Marcuss", "Webbb"), False),  # a typo in each part: neither is identical
+        (("Danielle", "Okonkwo"), ("Danielle", "Smith"), False),  # a marriage
+        (("Tomas", "Ruiz"), ("Maria", "Ruiz"), False),      # a relative on a household phone
+        (("Tomas", "Ruiz"), ("Maria", "Lopez"), False),
+    ],
+)
+def test_names_are_compatible_only_across_a_typo_in_one_part(stored, written, compatible):
+    stored, written = normalize_name(*stored), normalize_name(*written)
+    assert stored.compatible_with(written) is compatible
+    assert written.compatible_with(stored) is compatible
+
+
 def test_unmapped_role_returns_none_rather_than_defaulting():
     assert normalize_role("Material Handler", ROLE_MAP) == "material_handler"
     assert normalize_role("Site Marshal", ROLE_MAP) is None
@@ -390,11 +411,43 @@ def test_conflicting_strong_signals_go_to_review_and_change_neither_worker():
     assert (alicia.phones, alicia.emails) == ({"+18325550288"}, {"af@example.com"})
 
 
-def test_one_phone_under_two_names_in_one_file_goes_to_review_and_renames_nobody():
+@pytest.mark.parametrize(
+    "first, last, phone, email",
+    [
+        ("Maria", "Lopez", "8325550214", None),
+        # A household phone and a shared surname: sharing one part of the name is not enough.
+        ("Maria", "Ruiz", "8325550214", None),
+        # A phone nobody holds, on an agency dispatch address that Tomas holds.
+        ("Kevin", "Tran", "832.555.0777", "truiz@example.com"),
+    ],
+)
+def test_incompatible_name_on_a_held_identifier_goes_to_review_and_renames_nobody(first, last, phone, email):
+    registry = WorkerRegistry()
+    (tomas,) = compute_diff(registry, [row("Tomas", "Ruiz", "8325550214", "truiz@example.com")], WEEK_1).joiners
+
+    second = compute_diff(registry, [row(first, last, phone, email)], WEEK_2)
+
+    assert second.summary() == {"joiners": 0, "leavers": 0, "changed": 0,
+                                "unchanged": 0, "review": 1, "rejected": 0}
+    (flag,) = second.review
+    assert flag.confidence is MatchConfidence.CONFLICT
+    assert "matches Tomas Ruiz but the name is not compatible" in flag.note
+    assert (tomas.name.display, tomas.phones, tomas.emails) == (
+        "Tomas Ruiz", {"+18325550214"}, {"truiz@example.com"})
+    # The flag carries Tomas, so the flagged period is still a sighting of him.
+    assert flag.worker is tomas and flag.candidates == [tomas]
+    assert tomas.last_seen == WEEK_2
+
+
+# match() stops Jose: the name is not compatible with Maria. Mario is one edit
+# from Maria, so match() reads a typo, and only the same-file check in
+# compute_diff stops a near name from renaming her.
+@pytest.mark.parametrize("second", ["Jose", "Mario"])
+def test_one_phone_under_two_names_in_one_file_goes_to_review_and_renames_nobody(second):
     registry = WorkerRegistry()
     shared_phone = [
         row("Maria", "Lopez", "832-555-0111"),
-        row("Jose", "Lopez", "832-555-0111", source_row=3),
+        row(second, "Lopez", "832-555-0111", source_row=3),
     ]
     diff = compute_diff(registry, shared_phone, WEEK_1)
 
@@ -405,7 +458,7 @@ def test_one_phone_under_two_names_in_one_file_goes_to_review_and_renames_nobody
 
     (flag,) = diff.review
     assert flag.confidence is MatchConfidence.CONFLICT
-    assert flag.row.name.display == "Jose Lopez"
+    assert flag.row.name.display == f"{second} Lopez"
     assert flag.worker is diff.joiners[0]
     assert flag.candidates == [flag.worker]
 

@@ -76,8 +76,10 @@ def compute_diff(
         if result.worker.worker_id in seen_ids and row.name != result.worker.name:
             # A roster cannot list one person twice under two names, so the
             # second row is a second person on a shared identifier, and
-            # applying it would rename the first. The earlier row already
-            # marked the worker seen, so nothing is marked here.
+            # applying it would rename the first. match() has already
+            # escalated an incompatible name; what reaches here is a near
+            # one ("Mario" after "Maria") that it read as a typo. The earlier
+            # row already marked the worker seen, so nothing is marked here.
             diff.review.append(MatchResult(
                 row=row,
                 confidence=MatchConfidence.CONFLICT,

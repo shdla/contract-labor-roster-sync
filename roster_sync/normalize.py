@@ -44,6 +44,11 @@ NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 # only hold for a one-digit country code.
 COUNTRY_CODE = "1"
 
+# The most single-character edits one name part may differ by and still be
+# read as a typo of the stored one. Two covers a doubled letter, a dropped
+# letter and two letters swapped; a different name is further away than that.
+NAME_TYPO_EDITS = 2
+
 _NON_DIGIT = re.compile(r"\D")
 _MULTI_SPACE = re.compile(r"\s+")
 _EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -124,6 +129,35 @@ class NormalizedName:
     @property
     def display(self) -> str:
         return f"{self.first.title()} {self.last.title()}".strip()
+
+    def compatible_with(self, other: NormalizedName) -> bool:
+        """Whether a phone or email match may carry `other` onto this name without a human.
+
+        One part must be identical and the other within NAME_TYPO_EDITS: a
+        typo disturbs a few characters of one part. A whole part changing is a
+        marriage or a relative on a household phone, and the names alone
+        cannot tell those apart, so both go to review.
+        """
+        if self.first == other.first:
+            return _edit_distance(self.last, other.last) <= NAME_TYPO_EDITS
+        if self.last == other.last:
+            return _edit_distance(self.first, other.first) <= NAME_TYPO_EDITS
+        return False
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance: the fewest single-character insertions, deletions and substitutions."""
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current = [i]
+        for j, char_b in enumerate(b, start=1):
+            current.append(min(
+                previous[j] + 1,                        # delete char_a
+                current[j - 1] + 1,                     # insert char_b
+                previous[j - 1] + (char_a != char_b),   # substitute, free when equal
+            ))
+        previous = current
+    return previous[-1]
 
 
 def _fold(text: str) -> str:

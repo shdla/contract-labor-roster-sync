@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 182 tests
+idempotent sync · three-way data reconciliation · 198 tests
 
 ## Scenario
 
@@ -48,10 +48,23 @@ would mean the identifier changes whenever the source value changes, which
 defeats the purpose. Observed phones and emails accumulate as aliases, so a
 worker stays matchable after a phone change.
 
-**Matching is a cascade, and only strong signals merge automatically.**
-Phone match, then email match, then name. A name-only match is returned as
-`WEAK_NAME` and routed to human review rather than applied. Merging two
-people is a materially worse outcome than carrying a duplicate for a day.
+**Matching is a cascade, and phone or email merges automatically only when
+the name is compatible.** Phone match, then email match, then name.
+Compatible means one part of the name is identical and the other is within
+two single-character edits of the stored one, after normalization, so
+`Marcuss Webb` on Marcus Webb's phone is applied as a typo. Any other name on
+a held identifier goes to review as a `CONFLICT` that carries the holder, who
+still counts as seen. `Maria Ruiz` on Tomas Ruiz's phone is a relative on a
+household phone and `Danielle Smith` on Danielle Okonkwo's phone is a
+marriage, and the names alone cannot tell the two apart; confirming the
+marriage applies the rename, and the row matches strongly from then on. A
+name-only match is returned as `WEAK_NAME` and routed to human review rather
+than applied. Merging two people is a materially worse outcome than carrying
+a duplicate for a day. Two limits are known. One identifier has one owner, so
+a row on a shared phone with no identifier of its own cannot be onboarded
+until the agency supplies one. And a near name reads as a typo: `Mario Lopez`
+on Maria Lopez's phone is one edit away and is applied, unless both rows are
+in the same file, where the second goes to review.
 
 **Conflicting signals escalate rather than resolve by precedence.** When a
 phone matches one worker and the name matches another — a reassigned mobile
@@ -181,7 +194,7 @@ rejected every week.
 
 ```
 roster_sync/
-  normalize.py   phone, email, name and role normalization
+  normalize.py   phone, email, name and role normalization; name compatibility
   models.py      RosterRow, Worker, MatchResult, RosterDiff
   ingest.py      Excel parsing with header detection and column mapping
   identity.py    WorkerRegistry and the matching cascade
@@ -196,7 +209,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               182 tests covering normalization, matching, diffing,
+tests/               198 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -209,7 +222,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 182 tests
+python -m pytest tests/ -q            # 198 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
