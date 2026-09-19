@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date
 from typing import Protocol
 
 from .credentials import EligibilityReport
@@ -162,7 +161,6 @@ class HttpProvisioner:
 
 @dataclass
 class SyncOutcome:
-    as_of: date
     activated: list[str] = field(default_factory=list)
     deactivated: list[str] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
@@ -183,7 +181,7 @@ def sync_access(report: EligibilityReport, store, provisioner: Provisioner,
     stop the others — partial progress is better than none, and the failed
     list is the retry queue.
     """
-    outcome = SyncOutcome(as_of=report.as_of)
+    outcome = SyncOutcome()
     desired: list[tuple[Worker, str]] = (
         [(v.worker, "active") for v in report.cleared]
         + [(v.worker, "revoked") for v in report.blocked]

@@ -50,14 +50,6 @@ class IngestReport:
     rows_blank: int
 
 
-def _header_lookup(aliases: dict[str, list[str]]) -> dict[str, str]:
-    lookup: dict[str, str] = {}
-    for field, spellings in aliases.items():
-        for spelling in spellings:
-            lookup[spelling] = field
-    return lookup
-
-
 def _cell_text(value: object) -> str:
     return "" if value is None else str(value).strip().lower()
 
@@ -73,7 +65,7 @@ def find_header_row(
     it contains, and takes the best. A title row scores zero; the real header
     row scores highest.
     """
-    lookup = _header_lookup(aliases)
+    lookup = {s: f for f, names in aliases.items() for s in names}
     best_row, best_map, best_score = -1, {}, 0
 
     for index, row in enumerate(grid[:scan_depth]):
@@ -129,7 +121,6 @@ def read_roster(
                 phone=normalize_phone(value("phone")),
                 email=normalize_email(value("email")),
                 role=normalize_role(value("role"), role_map),
-                raw={f: value(f) for f in column_map},
             )
         )
 

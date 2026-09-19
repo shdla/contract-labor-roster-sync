@@ -250,7 +250,6 @@ def test_present_but_not_badged_at_site_is_distinguished():
 
 def test_without_a_site_feed_two_way_still_works():
     report = reconcile([rec(AGENCY, "w", D1, 8)], [rec(SCANNER, "w", D1, 7)], None, D1, D1)
-    assert report.site_feed_present is False
     assert report.workers[0].site is None
     assert report.workers[0].days[0].reading == "agency over-reported"
 

@@ -47,7 +47,7 @@ class HoursRecord:
     """Hours attributed to one worker on one day from one source."""
 
     source: str
-    worker_id: str | None
+    worker_id: str
     day: date
     hours: float
     note: str = ""
@@ -84,7 +84,7 @@ def _parse_time(day: date, value: str) -> datetime:
     raise ValueError(f"unrecognized time {value!r}")
 
 
-def read_agency_report(path: str | Path, registry: WorkerRegistry, role_map: dict[str, str] | None = None
+def read_agency_report(path: str | Path, registry: WorkerRegistry
                        ) -> tuple[list[HoursRecord], list[UnresolvedRow]]:
     """Agency pay-period report: name, phone/email, and total hours per day.
 
@@ -164,11 +164,10 @@ def read_site_feed(path: str | Path, badge_to_worker: dict[str, str]
     to be done by hand against a spreadsheet, and the fix is to capture the
     mapping when the badge is issued, not to reconstruct it per incident.
     """
-    mapped_path = Path(path)
-    records, unresolved = read_punch_log(mapped_path, SITE, id_column="badge_id")
+    records, unresolved = read_punch_log(path, SITE, id_column="badge_id")
     resolved: list[HoursRecord] = []
     for record in records:
-        worker_id = badge_to_worker.get(record.worker_id or "")
+        worker_id = badge_to_worker.get(record.worker_id)
         if worker_id is None:
             unresolved.append(UnresolvedRow(SITE, 0, f"badge {record.worker_id} not mapped", {}))
             continue
@@ -203,11 +202,8 @@ class WorkerVariance:
 
 @dataclass
 class ReconciliationReport:
-    period_start: date
-    period_end: date
     workers: list[WorkerVariance] = field(default_factory=list)
     unresolved: list[UnresolvedRow] = field(default_factory=list)
-    site_feed_present: bool = False
 
     @property
     def disputed(self) -> list[WorkerVariance]:
@@ -276,10 +272,4 @@ def reconcile(
         entry.days.append(DayVariance(day, hours[AGENCY], hours[SCANNER], site_hours,
                                       _classify(hours[AGENCY], hours[SCANNER], site_hours, tolerance_hours)))
 
-    return ReconciliationReport(
-        period_start=period_start,
-        period_end=period_end,
-        workers=list(per_worker.values()),
-        unresolved=list(unresolved),
-        site_feed_present=site is not None,
-    )
+    return ReconciliationReport(workers=list(per_worker.values()), unresolved=list(unresolved))

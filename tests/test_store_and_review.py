@@ -186,7 +186,7 @@ def test_rejecting_creates_a_second_person_deliberately(store):
 
     resolution = reject(store, registry, review_id, decided_by="a.diaz")
 
-    assert resolution.created_worker is True
+    assert resolution.decision == "rejected"
     assert len(registry.workers) == 2
     assert store.open_reviews() == []
 

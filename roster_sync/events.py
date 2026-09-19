@@ -105,11 +105,9 @@ class InMemoryEventSender:
 
     def __init__(self) -> None:
         self.sent: list[Event] = []
-        self.dedup_ids_seen: set[str] = set()
 
     def send(self, event: Event) -> None:
         self.sent.append(event)
-        self.dedup_ids_seen.add(event.id)
 
 
 # -- webhook --------------------------------------------------------------

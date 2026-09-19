@@ -85,7 +85,7 @@ def test_in_memory_sender_records_sent_events_and_dedup_ids():
     event = worker_joined_event(worker(), D1)
     sender.send(event)
     assert sender.sent == [event]
-    assert sender.dedup_ids_seen == {event.id}
+    assert [e.id for e in sender.sent] == [event.id]
 
 
 def test_emit_diff_reports_sent_ids():

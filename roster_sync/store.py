@@ -137,7 +137,6 @@ class PendingReview:
 
     review_id: str
     as_of: date
-    source_row: int | None
     row: RosterRow
     confidence: str
     note: str
@@ -431,7 +430,6 @@ class Store:
         return PendingReview(
             review_id=row["review_id"],
             as_of=date.fromisoformat(row["as_of"]),
-            source_row=row["source_row"],
             row=RosterRow(
                 source_row=row["source_row"] or 0,
                 name=name,
