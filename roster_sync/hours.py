@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -41,13 +42,16 @@ from .normalize import normalize_email, normalize_name, normalize_phone
 
 AGENCY, SCANNER, SITE = "agency", "scanner", "site"
 
+# The one reading that is not a variance. Named because it is compared, not only printed.
+CLEAN = "clean"
+
 
 @dataclass(frozen=True)
 class HoursRecord:
     """Hours attributed to one worker on one day from one source."""
 
     source: str
-    worker_id: str | None
+    worker_id: str
     day: date
     hours: float
     note: str = ""
@@ -71,7 +75,7 @@ def _parse_date(value: str) -> date:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"unrecognised date {value!r}")
+    raise ValueError(f"unrecognized date {value!r}")
 
 
 def _parse_time(day: date, value: str) -> datetime:
@@ -81,10 +85,10 @@ def _parse_time(day: date, value: str) -> datetime:
             return datetime.combine(day, datetime.strptime(text, fmt).time())
         except ValueError:
             continue
-    raise ValueError(f"unrecognised time {value!r}")
+    raise ValueError(f"unrecognized time {value!r}")
 
 
-def read_agency_report(path: str | Path, registry: WorkerRegistry, role_map: dict[str, str] | None = None
+def read_agency_report(path: str | Path, registry: WorkerRegistry
                        ) -> tuple[list[HoursRecord], list[UnresolvedRow]]:
     """Agency pay-period report: name, phone/email, and total hours per day.
 
@@ -99,6 +103,8 @@ def read_agency_report(path: str | Path, registry: WorkerRegistry, role_map: dic
         reader = csv.DictReader(handle)
         reader.fieldnames = [f.strip().lower() for f in reader.fieldnames or []]
         for line, raw in enumerate(reader, start=2):
+            # DictReader fills a short row with None; as empty cells it fails parsing below, not the whole file.
+            raw = {k: v or "" for k, v in raw.items()}
             row = RosterRow(
                 source_row=line,
                 name=normalize_name(raw.get("first name"), raw.get("last name")),
@@ -135,6 +141,8 @@ def read_punch_log(path: str | Path, source: str, id_column: str = "worker_id"
         reader = csv.DictReader(handle)
         reader.fieldnames = [f.strip().lower() for f in reader.fieldnames or []]
         for line, raw in enumerate(reader, start=2):
+            # Short rows arrive as None, read as empty cells; a row cut before "out" is a missing out-punch.
+            raw = {k: v or "" for k, v in raw.items()}
             try:
                 day = _parse_date(raw["date"])
                 worker_id = raw[id_column].strip()
@@ -160,11 +168,10 @@ def read_site_feed(path: str | Path, badge_to_worker: dict[str, str]
     to be done by hand against a spreadsheet, and the fix is to capture the
     mapping when the badge is issued, not to reconstruct it per incident.
     """
-    mapped_path = Path(path)
-    records, unresolved = read_punch_log(mapped_path, SITE, id_column="badge_id")
+    records, unresolved = read_punch_log(path, SITE, id_column="badge_id")
     resolved: list[HoursRecord] = []
     for record in records:
-        worker_id = badge_to_worker.get(record.worker_id or "")
+        worker_id = badge_to_worker.get(record.worker_id)
         if worker_id is None:
             unresolved.append(UnresolvedRow(SITE, 0, f"badge {record.worker_id} not mapped", {}))
             continue
@@ -194,16 +201,13 @@ class WorkerVariance:
 
     @property
     def clean(self) -> bool:
-        return all(d.reading == "clean" for d in self.days)
+        return all(d.reading == CLEAN for d in self.days)
 
 
 @dataclass
 class ReconciliationReport:
-    period_start: date
-    period_end: date
     workers: list[WorkerVariance] = field(default_factory=list)
     unresolved: list[UnresolvedRow] = field(default_factory=list)
-    site_feed_present: bool = False
 
     @property
     def disputed(self) -> list[WorkerVariance]:
@@ -227,12 +231,12 @@ def _classify(agency: float, scanner: float, site: float | None, tolerance: floa
 
     if site is None:
         if near(agency, scanner):
-            return "clean"
+            return CLEAN
         return "agency over-reported" if agency > scanner else "agency under-reported"
     if agency > 0 and scanner == 0 and site == 0:
         return "claimed but unrecorded"
     if near(agency, scanner) and near(scanner, site):
-        return "clean"
+        return CLEAN
     if agency > scanner and near(scanner, site):
         return "agency over-reported"
     if near(agency, scanner) and site + tolerance < scanner:
@@ -249,7 +253,7 @@ def reconcile(
     period_start: date,
     period_end: date,
     tolerance_hours: float = 0.25,
-    unresolved: list[UnresolvedRow] = (),
+    unresolved: Sequence[UnresolvedRow] = (),
 ) -> ReconciliationReport:
     """Compare sources per worker per day, then roll up to the pay period.
 
@@ -272,10 +276,4 @@ def reconcile(
         entry.days.append(DayVariance(day, hours[AGENCY], hours[SCANNER], site_hours,
                                       _classify(hours[AGENCY], hours[SCANNER], site_hours, tolerance_hours)))
 
-    return ReconciliationReport(
-        period_start=period_start,
-        period_end=period_end,
-        workers=list(per_worker.values()),
-        unresolved=list(unresolved),
-        site_feed_present=site is not None,
-    )
+    return ReconciliationReport(workers=list(per_worker.values()), unresolved=list(unresolved))

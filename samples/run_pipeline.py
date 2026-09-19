@@ -9,7 +9,6 @@ Writes to a throwaway database so it can be run repeatedly.
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -24,10 +23,12 @@ from roster_sync import (  # noqa: E402
     file_hash, read_agency_report, read_punch_log, read_site_feed, read_roster,
     reconcile, sync_access,
 )
+from roster_sync.hours import CLEAN  # noqa: E402
 
 DB = ROOT / "demo.db"
 SAMPLES = ROOT / "samples"
-CONFIG = yaml.safe_load(open(ROOT / "config" / "roles.yaml"))
+with open(ROOT / "config" / "roles.yaml") as handle:
+    CONFIG = yaml.safe_load(handle)
 ROLES, REQUIREMENTS = CONFIG["aliases"], CONFIG["requirements"]
 
 WEEK_1, WEEK_2 = date(2024, 7, 8), date(2024, 7, 15)
@@ -61,9 +62,9 @@ def main() -> None:
                 print(f"    CHANGED {worker.name.display:22} {'; '.join(changes)}")
 
         rule("2. Credentials granted")
-        ruiz = next(w for w in registry.workers if w.name.last == "ruiz")
-        fontenot = next(w for w in registry.workers if w.name.last == "fontenot")
-        baptiste = next(w for w in registry.workers if w.name.last == "baptiste")
+        by_last = {w.name.last: w for w in registry.workers}
+        ruiz, fontenot, baptiste = by_last["ruiz"], by_last["fontenot"], by_last["baptiste"]
+        priya, villanueva = by_last["raghunathan"], by_last["villanueva"]
 
         for worker in registry.workers:
             store.grant_credential(Credential(worker.worker_id, "safety_orientation", WEEK_1))
@@ -71,10 +72,8 @@ def main() -> None:
                 store.grant_credential(Credential(worker.worker_id, "ppe_issued", WEEK_1))
         # Baptiste is a forklift operator with no PPE record and no certificate.
         # Raghunathan's buckhoist training expires inside the warning window.
-        priya = next(w for w in registry.workers if w.name.last == "raghunathan")
         store.grant_credential(Credential(priya.worker_id, "buckhoist_training", WEEK_1,
                                           expires_on=DAY_1 + timedelta(days=9)))
-        villanueva = next(w for w in registry.workers if w.name.last == "villanueva")
         store.grant_credential(Credential(villanueva.worker_id, "forklift_certification", WEEK_1,
                                           expires_on=DAY_1 + timedelta(days=200)))
         print(f"  {sum(len(v) for v in store.all_credentials().values())} credential records")
@@ -89,12 +88,15 @@ def main() -> None:
         provisioner = InMemoryProvisioner()
         inactive = [w for w in registry.workers if not w.active]
         first = sync_access(report, store, provisioner, inactive)
-        print(f"  first run:  {first.summary()}   api calls: {len(provisioner.calls)}")
+        calls_first = len(provisioner.calls)
+        print(f"  first run:  {first.summary()}   api calls: {calls_first}")
         second = sync_access(report, store, provisioner, inactive)
-        print(f"  rerun:      {second.summary()}   api calls: {len(provisioner.calls)}")
+        # provisioner.calls is cumulative, so the rerun prints its own share.
+        calls_rerun = len(provisioner.calls) - calls_first
+        print(f"  rerun:      {second.summary()}   api calls: {calls_rerun}")
 
         for worker_id, ref in provisioner.active.items():
-            store.map_badge(ref.replace("BADGE-", "BADGE-"), worker_id, DAY_1)
+            store.map_badge(ref, worker_id, DAY_1)
 
         rule("5. Three-way hours reconciliation")
         (SAMPLES / "scanner_punches.csv").write_text(
@@ -104,10 +106,8 @@ def main() -> None:
             f"{fontenot.worker_id},2024-07-15,06:00,14:00\n"
             f"{fontenot.worker_id},2024-07-16,06:00,12:00\n"
         )
-        badges = {ref: wid for wid, ref in provisioner.active.items()}
-        ruiz_badge = badges.get(ruiz.worker_id) or next(
-            b for b, w in store.badge_map().items() if w == ruiz.worker_id)
-        fontenot_badge = next(b for b, w in store.badge_map().items() if w == fontenot.worker_id)
+        badge_of = {w: b for b, w in store.badge_map().items()}
+        ruiz_badge, fontenot_badge = badge_of[ruiz.worker_id], badge_of[fontenot.worker_id]
         (SAMPLES / "site_badge_feed.csv").write_text(
             "badge_id,date,in,out\n"
             f"{ruiz_badge},2024-07-15,05:52,14:05\n"
@@ -124,12 +124,12 @@ def main() -> None:
                           unresolved=unresolved_a + unresolved_s + unresolved_x)
         print(f"  {recon.summary()}\n")
         names = {w.worker_id: w.name.display for w in registry.workers}
-        for variance in recon.workers:
+        for variance in sorted(recon.workers, key=lambda v: names.get(v.worker_id, v.worker_id)):
             print(f"  {names.get(variance.worker_id, variance.worker_id):22} "
                   f"agency {variance.agency:5.2f}  scanner {variance.scanner:5.2f}  "
                   f"site {variance.site if variance.site is None else f'{variance.site:5.2f}'}")
             for day in variance.days:
-                if day.reading != "clean":
+                if day.reading != CLEAN:
                     print(f"      {day.day}  {day.reading}  "
                           f"(agency {day.agency}, scanner {day.scanner}, site {day.site})")
         for item in recon.unresolved:

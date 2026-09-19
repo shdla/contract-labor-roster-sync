@@ -22,7 +22,6 @@ class RosterRow:
     phone: str | None
     email: str | None
     role: str | None
-    raw: dict[str, object] = field(default_factory=dict)
 
     @property
     def is_usable(self) -> bool:

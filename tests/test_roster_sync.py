@@ -1,3 +1,4 @@
+import uuid
 from datetime import date
 
 import pytest
@@ -36,13 +37,23 @@ WEEK_3 = date(2024, 7, 22)
         (8325550142, "+18325550142"),
         ("8325550142.0", "+18325550142"),
         ("832-555-0142 x204", "+18325550142"),
+        ("832-555-0142 ext. 204", "+18325550142"),
+        ("832-555-0142 ext204", "+18325550142"),
+        ("+1 (832) 555-0142", "+18325550142"),
     ],
 )
 def test_phone_formats_converge(raw, expected):
     assert normalize_phone(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["n/a", "", None, "555", "0000000000", "pending"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "n/a", "", None, "555", "0000000000", "pending",
+        # Eleven digits that do not start with the country code: refused, not guessed.
+        "28325550142", "44 832 555 0142",
+    ],
+)
 def test_unusable_phones_are_none(raw):
     assert normalize_phone(raw) is None
 
@@ -60,6 +71,17 @@ def test_name_folding_ignores_case_accents_and_suffixes():
 
     assert normalize_name("José", "Peña") == normalize_name("jose", "pena")
     assert normalize_name("Mary", "O'Brien") == normalize_name("mary", "OBrien")
+
+
+@pytest.mark.parametrize("written,plain", [("Smith-Jones", "Smith Jones"), ("Villanueva Jr.", "Villanueva")])
+def test_hyphenated_and_dotted_suffix_last_names_converge(written, plain):
+    assert normalize_name("Ray", written).last == normalize_name("Ray", plain).last
+
+
+@pytest.mark.parametrize("first,last", [("", "Webb"), ("Marcus", None), ("n/a", "Webb")])
+def test_name_with_a_missing_part_is_none(first, last):
+    # A worker is never created with an empty first or last name.
+    assert normalize_name(first, last) is None
 
 
 def test_name_handles_last_comma_first_in_one_cell():
@@ -101,15 +123,20 @@ def test_first_sighting_is_new_and_gets_an_id():
     assert worker.role == "material_handler"
 
 
+def test_worker_id_is_issued_not_derived_from_the_row():
+    same = row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com")
+    first = WorkerRegistry().create(same, WEEK_1)
+    second = WorkerRegistry().create(same, WEEK_1)
+
+    # An id derived from name, phone or email would be equal here, and would
+    # change the day any of them changed.
+    assert first.worker_id != second.worker_id
+    assert uuid.UUID(first.worker_id).version == 4
+
+
 def test_name_typo_still_matches_on_phone():
     registry = WorkerRegistry()
-    registry.create(row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com").__class__(
-        source_row=2,
-        name=normalize_name("Marcus", "Webb"),
-        phone=normalize_phone("(832) 555-0142"),
-        email=normalize_email("mwebb@example.com"),
-        role="material_handler",
-    ), WEEK_1)
+    registry.create(row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com"), WEEK_1)
 
     result = registry.match(row("Marcuss", "Webb", "832.555.0142", "mwebb@example.com"))
     assert result.confidence is MatchConfidence.STRONG_PHONE
@@ -156,6 +183,18 @@ def test_reassigned_phone_pointing_at_another_name_escalates():
     # Fontenot's old number reissued to Villanueva by the carrier.
     result = registry.match(row("Ray", "Villanueva", "832.555.0288"))
     assert result.confidence is MatchConfidence.CONFLICT
+
+
+def test_phone_and_email_pointing_at_different_workers_escalate():
+    registry = WorkerRegistry()
+    ray = registry.create(row("Ray", "Villanueva", "832.555.0193", "ray@example.com"), WEEK_1)
+    alicia = registry.create(row("Alicia", "Fontenot", "832.555.0288", "af@example.com"), WEEK_1)
+
+    # Ray's phone with Alicia's email. Neither signal outranks the other.
+    result = registry.match(row("Ray", "Villanueva", "832.555.0193", "af@example.com"))
+    assert result.confidence is MatchConfidence.CONFLICT
+    assert result.worker is None
+    assert result.candidates == [ray, alicia]
 
 
 def test_row_without_any_contact_identifier_is_rejected():
@@ -246,3 +285,26 @@ def test_uncertain_rows_go_to_review_and_provision_nothing():
     assert second.summary()["review"] == 1
     assert second.summary()["joiners"] == 0
     assert len(registry.workers) == 1
+
+
+def test_conflicting_strong_signals_go_to_review_and_change_neither_worker():
+    registry = WorkerRegistry()
+    first = compute_diff(
+        registry,
+        [
+            row("Ray", "Villanueva", "832.555.0193", "ray@example.com"),
+            row("Alicia", "Fontenot", "832.555.0288", "af@example.com"),
+        ],
+        WEEK_1,
+    )
+    ray, alicia = first.joiners
+
+    # Resolving by precedence would apply this row to Ray and hand him
+    # Alicia's email.
+    mixed = row("Ray", "Villanueva", "832.555.0193", "af@example.com")
+    second = compute_diff(registry, [mixed], WEEK_2)
+
+    assert second.summary()["review"] == 1
+    assert second.summary()["changed"] == 0
+    assert (ray.phones, ray.emails) == ({"+18325550193"}, {"ray@example.com"})
+    assert (alicia.phones, alicia.emails) == ({"+18325550288"}, {"af@example.com"})

@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 79 tests
+idempotent sync · three-way data reconciliation · 123 tests
 
 ## Scenario
 
@@ -124,11 +124,14 @@ two records.
 **Returning workers are not new hires.** A rolled-off worker who reappears
 reactivates under the original identifier, preserving credential history.
 
-**Role mapping and header spellings live in configuration.** The agency
-writes `Material Handler`, `material handler` and `MH` in different weeks.
-Adding a spelling is a change to `config/roles.yaml`, not to code. An
-unrecognized role returns `None` and surfaces as an exception rather than
-defaulting to the least-privileged role.
+**Role mapping lives in configuration.** The agency writes `Material
+Handler`, `material handler` and `MH` in different weeks. Adding a spelling
+is a change to `config/roles.yaml`, not to code. Header spellings are one
+table in `ingest.py` (`DEFAULT_HEADER_ALIASES`), overridable per call through
+`read_roster`'s `header_aliases` argument. An unrecognized role returns
+`None` rather than defaulting to the least-privileged role, and nothing is
+raised: a new worker with no mapped role is blocked by the gate, and an
+existing worker keeps the last mapped role.
 
 **Normalization refuses rather than guesses.** A phone of the wrong length,
 a value of `n/a`, a string that is not email-shaped — all become `None`. A
@@ -143,15 +146,17 @@ roster_sync/
   ingest.py      Excel parsing with header detection and column mapping
   identity.py    WorkerRegistry and the matching cascade
   diff.py        joiners, leavers, changes, review queue
-  store.py       SQLite persistence for workers, periods, queue, credentials
+  store.py       SQLite persistence: workers, periods, review queue,
+                 credentials, access state, badge map
   review.py      confirm / reject resolution of flagged rows
   credentials.py credential records and the eligibility gate
   provisioning.py access-system adapters, OAuth client, idempotent sync
   hours.py       three-way hours reconciliation and source adapters
   events.py      signed, deduplicable webhook emission to the iPaaS
 config/roles.yaml    role aliases and per-role credential requirements
-samples/             sample-data generators and an end-to-end demo
-tests/               79 tests covering normalization, matching, diffing,
+samples/             sample-data generators, an end-to-end demo, and
+                     send_test_event.py for signed webhook test events
+tests/               123 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -163,16 +168,24 @@ nothing about it, so the matching logic stays testable in memory.
 ## Running it
 
 ```bash
-pip install -r requirements.txt        # Python 3.10 or newer
+pip install -r requirements.txt        # Python 3.9 or newer
+python -m pytest tests/ -q            # 123 tests
+python samples/run_pipeline.py        # end-to-end walkthrough
+python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
+
+# Optional: sample files are committed; rerun only after editing the generators.
 python samples/make_samples.py        # generate messy sample workbooks
 python samples/make_hours_samples.py  # generate the agency hours file
-python -m pytest tests/ -q            # 79 tests
-python samples/run_pipeline.py        # end-to-end walkthrough
 ```
 
 `run_pipeline.py` processes two roster files, grants credentials, runs the
 eligibility gate, provisions access twice to show the second run making no
 calls, and reconciles a pay period across three hours sources.
+
+Without `--dry-run`, `send_test_event.py` posts to `ROSTER_WEBHOOK_URL` and
+signs with `ROSTER_SIGNING_SECRET` (default `dev-secret`). The HTTP adapters
+take an injected session (`requests.Session` or any object with `.post` and
+`.delete`), so `requests` is deliberately not a dependency.
 
 ## Sample run
 
@@ -224,19 +237,23 @@ roster_week2.xlsx  header row 3  8 rows  rerun=False
 4. Access provisioning
 ====================================================================
   first run:  {'activated': 7, 'deactivated': 1, 'unchanged': 0, 'failed': 0}   api calls: 7
-  rerun:      {'activated': 0, 'deactivated': 0, 'unchanged': 8, 'failed': 0}   api calls: 7
+  rerun:      {'activated': 0, 'deactivated': 0, 'unchanged': 8, 'failed': 0}   api calls: 0
 
 ====================================================================
 5. Three-way hours reconciliation
 ====================================================================
   {'workers': 2, 'clean': 1, 'disputed': 1, 'agency_hours': 32.0, 'scanner_hours': 30.0, 'over_reported_hours': 2.0, 'unresolved_rows': 1}
 
-  Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   Alicia Fontenot        agency 16.00  scanner 14.00  site  6.03
       2024-07-15  present but not badged at site  (agency 8.0, scanner 8.0, site 0.0)
       2024-07-16  agency over-reported  (agency 8.0, scanner 6.0, site 6.03)
+  Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   UNRESOLVED [site] badge BADGE-UNKNOWN not mapped
 ```
+
+The single `deactivated` on the first run is a blocked worker who was never
+provisioned, so the state is recorded without a request, which is why eight
+transitions make seven calls.
 
 ## Spreadsheet defects handled
 
@@ -250,21 +267,42 @@ appearing intermittently, and `Last, First` collapsed into one cell.
 
 ## Scope boundary
 
-Nothing from the original scope remains unbuilt. Orientation scheduling, PPE
-and training notifications, reminders and escalation are deliberately out of
-scope for this repository. Credential *state* belongs here; credential
-*scheduling and messaging* belongs in the companion iPaaS project (Workato),
-where retry and multi-day reminder sequences are solved problems rather than
-something to hand-roll.
+The records side of the original scope is complete here; scheduling and
+messaging are built in the companion Workato project. Orientation
+scheduling, PPE and training notifications, reminders and escalation are
+deliberately out of scope for this repository. Credential *state* belongs
+here; credential *scheduling and messaging* belongs in the companion iPaaS
+project (Workato), where retry and multi-day reminder sequences are solved
+problems rather than something to hand-roll.
 
 `events.py` is the boundary itself. A joiner detected in this repository
 becomes a `worker.joined` webhook delivery: HMAC-SHA256-signed, and carrying
 a dedup id that is a UUIDv5 of `(event type, worker id, roster period)`
-rather than a random value, so a retried delivery — this side treats
-delivery as at-least-once — reproduces the same id instead of minting a new
-one. The receiving recipe reacts to that id being new or repeated; nothing
-about *how* it reacts (which lookup table, what the notification says, where
-the error monitor wraps) is decided in Python. That split is deliberate: an
-agency roster is miserable to parse and reconcile as recipe steps, and
-notification retry/escalation sequencing is a solved problem in an iPaaS
-that would be tedious to hand-roll here.
+rather than a random value. A retry can double-send, so delivery is
+at-least-once within a run, and every retry carries the same id instead of
+minting a new one. A rerun of an already-processed period does not re-emit
+today: it reports no joiners, so an event that exhausted its retries is
+listed in `EmitOutcome.failed` and is not sent again. The receiving recipe
+reacts to that id being new or repeated; nothing about *how* it reacts
+(which lookup table, what the notification says, where the error monitor
+wraps) is decided in Python. That split is deliberate: an agency roster is
+miserable to parse and reconcile as recipe steps, and notification
+retry/escalation sequencing is a solved problem in an iPaaS that would be
+tedious to hand-roll here.
+
+### Event contract
+
+One `worker.joined` delivery, exactly as sent: JSON with sorted keys and
+compact separators.
+
+```json
+{"data":{"emails":["truiz@example.com"],"name":"Tomas Ruiz","phones":["+18325550214"],"role":"material_handler"},"event_id":"41f636b2-74cb-5539-8770-61aa82c5d470","occurred_on":"2024-07-08","subject":"22222222-1111-4111-8111-111111111111","type":"worker.joined"}
+```
+
+- Envelope keys: `event_id`, `type`, `subject` (the worker id), `occurred_on`
+  (the roster period), `data`. Data keys: `name`, `role`, `phones`, `emails`.
+- `X-Dedup-Id`: the event id, the same value as `event_id` in the body.
+- `X-Signature-256`: lowercase hex HMAC-SHA256 of the exact body bytes, with
+  no `sha256=` prefix.
+- A 429, 500, 502, 503 or 504 is retried, up to four attempts in total, with
+  the same id each time, so the receiver must deduplicate on `X-Dedup-Id`.

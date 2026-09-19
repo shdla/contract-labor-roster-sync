@@ -12,14 +12,13 @@ Two outcomes:
 - reject   the row is a different person; a worker is created deliberately
 
 Both are recorded with who decided and when, because deactivating somebody's
-site access on the strength of a judgement call is the kind of thing that
+site access on the strength of a judgment call is the kind of thing that
 gets asked about later.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 
 from .identity import WorkerRegistry
 from .models import MatchConfidence, MatchResult, Worker
@@ -28,11 +27,9 @@ from .store import PendingReview, Store
 
 @dataclass
 class Resolution:
-    review_id: str
     decision: str
     worker: Worker
     changes: list[str]
-    created_worker: bool
 
 
 class ReviewResolutionError(RuntimeError):
@@ -45,7 +42,6 @@ def confirm(
     review_id: str,
     worker_id: str,
     decided_by: str,
-    seen_on: date | None = None,
 ) -> Resolution:
     """Attach a flagged row to an existing worker and persist the decision."""
     review = _load_open(store, review_id)
@@ -61,11 +57,11 @@ def confirm(
         )
 
     result = MatchResult(row=review.row, confidence=MatchConfidence.WEAK_NAME, worker=worker)
-    changes = registry.apply(result, seen_on or review.as_of)
+    changes = registry.apply(result, review.as_of)
 
     store.save_registry(registry)
     store.record_decision(review_id, "confirmed", worker.worker_id, decided_by)
-    return Resolution(review_id, "confirmed", worker, changes, created_worker=False)
+    return Resolution("confirmed", worker, changes)
 
 
 def reject(
@@ -73,7 +69,6 @@ def reject(
     registry: WorkerRegistry,
     review_id: str,
     decided_by: str,
-    seen_on: date | None = None,
 ) -> Resolution:
     """Treat a flagged row as a distinct person and create the worker."""
     review = _load_open(store, review_id)
@@ -85,10 +80,10 @@ def reject(
             f"{conflict.name.display}; this row cannot be a new person"
         )
 
-    worker = registry.create(review.row, seen_on or review.as_of)
+    worker = registry.create(review.row, review.as_of)
     store.save_registry(registry)
     store.record_decision(review_id, "rejected", worker.worker_id, decided_by)
-    return Resolution(review_id, "rejected", worker, [], created_worker=True)
+    return Resolution("rejected", worker, [])
 
 
 def _load_open(store: Store, review_id: str) -> PendingReview:

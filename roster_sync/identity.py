@@ -44,7 +44,7 @@ class WorkerRegistry:
         """Register a roster period. Returns False if already processed.
 
         Absence is derived from this set rather than from a counter, so
-        reprocessing the same file is a no-op instead of ageing every worker
+        reprocessing the same file is a no-op instead of aging every worker
         who happened to be missing from it.
         """
         if as_of in self._periods:

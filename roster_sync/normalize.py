@@ -35,6 +35,10 @@ PLACEHOLDER_TOKENS = {
 
 NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
+# A constant, not a parameter: the 10- and 11-digit rules in normalize_phone
+# only hold for a one-digit country code.
+COUNTRY_CODE = "1"
+
 _NON_DIGIT = re.compile(r"\D")
 _MULTI_SPACE = re.compile(r"\s+")
 _EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -51,7 +55,7 @@ def _clean(raw: object) -> str:
     return text
 
 
-def normalize_phone(raw: object, default_country_code: str = "1") -> str | None:
+def normalize_phone(raw: object) -> str | None:
     """Return an E.164 phone string, or None if the value is unusable.
 
     Handles the formats that show up in agency spreadsheets: (832) 555-0142,
@@ -76,8 +80,8 @@ def normalize_phone(raw: object, default_country_code: str = "1") -> str | None:
         return None
 
     if len(digits) == 10:
-        digits = default_country_code + digits
-    elif len(digits) == 11 and digits.startswith(default_country_code):
+        digits = COUNTRY_CODE + digits
+    elif len(digits) == 11 and digits.startswith(COUNTRY_CODE):
         pass
     else:
         # Wrong length: a truncated cell, a partial number, or a fax with a
@@ -161,8 +165,8 @@ def normalize_role(raw: object, role_map: dict[str, str]) -> str | None:
     """Map a free-text role cell onto a canonical role code.
 
     role_map is loaded from config so a new spelling is a config change, not
-    a code change. Unmapped roles return None and are surfaced as exceptions
-    rather than silently defaulting to the least-privileged role.
+    a code change. Unmapped roles return None; nothing is raised. A worker
+    with no mapped role is blocked by the eligibility gate.
     """
     text = _clean(raw)
     if not text:

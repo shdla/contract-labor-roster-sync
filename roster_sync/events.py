@@ -7,15 +7,15 @@ deliveries and getting them there — it says nothing about what happens once
 they arrive.
 
 Delivery is at-least-once (retries can double-send); a deterministic dedup
-id is what makes that safe to replay rather than merely convenient. Per
-design invariant #10, the id is UUIDv5 of (type, subject, period), so
-retrying the same worker/period/event-type produces the same id and the
-receiver can discard the repeat. Signing (HMAC-SHA256 over the raw JSON
-body) lets Workato's webhook trigger — which needs no connection object —
-still verify the sender.
+id is what makes that safe to replay rather than merely convenient. The id
+is a UUIDv5 of (type, subject, period), so retrying the same
+worker/period/event-type produces the same id and the receiver can discard
+the repeat. Signing (HMAC-SHA256 over the raw JSON body) lets Workato's
+webhook trigger — which needs no connection object — still verify the
+sender.
 
-Only worker.joined is emitted today, because Recipe 1 (orientation
-scheduling) is the only consumer built so far. Leaver/changed events are not
+Only worker.joined is emitted today, because the orientation-scheduling
+recipe is the only consumer built so far. Leaver/changed events are not
 invented here; add an event type only once a recipe exists to react to it.
 """
 
@@ -27,6 +27,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
@@ -41,7 +42,7 @@ EVENT_ID_NAMESPACE = uuid.UUID("a3f1e2d4-9b6c-4e10-8f2a-6d4c1b9e7f00")
 
 
 def event_id(event_type: str, subject: str, period: date) -> str:
-    """Deterministic id for (type, subject, period) -- design invariant #10."""
+    """Deterministic id for (type, subject, period): same inputs, same id, across processes and reruns."""
     name = f"{event_type}:{subject}:{period.isoformat()}"
     return str(uuid.uuid5(EVENT_ID_NAMESPACE, name))
 
@@ -105,28 +106,38 @@ class InMemoryEventSender:
 
     def __init__(self) -> None:
         self.sent: list[Event] = []
-        self.dedup_ids_seen: set[str] = set()
 
     def send(self, event: Event) -> None:
         self.sent.append(event)
-        self.dedup_ids_seen.add(event.id)
 
 
 # -- webhook --------------------------------------------------------------
 
+# Rate limiting and server-side failures. The same set HttpProvisioner
+# retries on, repeated here so events.py does not import provisioning.py.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+class WebhookResponse(Protocol):
+    """The part of a response this module reads."""
+
+    status_code: int
+
+
+class WebhookSession(Protocol):
+    """The part of a session this module calls; requests.Session satisfies it, and tests inject a fake."""
+
+    def post(self, url: str, **kwargs) -> WebhookResponse: ...
+
 
 class WebhookEventSender:
-    """Delivers events to a webhook (Workato's Webhooks connector trigger).
+    """Delivers events to a webhook (Workato's Webhooks connector trigger) through a WebhookSession."""
 
-    session is any object exposing .post returning something with
-    .status_code; requests.Session satisfies this, and tests inject a fake --
-    the same convention provisioning.py uses for the access API.
-    """
-
-    def __init__(self, url: str, signing_secret: str, session,
+    def __init__(self, url: str, signing_secret: str, session: WebhookSession,
                  dedup_header: str = "X-Dedup-Id",
                  signature_header: str = "X-Signature-256",
-                 max_attempts: int = 4, backoff_seconds: float = 0.5, sleep=time.sleep) -> None:
+                 max_attempts: int = 4, backoff_seconds: float = 0.5,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.url = url
         self.signing_secret = signing_secret.encode("utf-8")
         self.session = session
@@ -136,20 +147,22 @@ class WebhookEventSender:
         self.backoff_seconds = backoff_seconds
         self._sleep = sleep
 
-    def _signature(self, body: bytes) -> str:
-        return hmac.new(self.signing_secret, body, hashlib.sha256).hexdigest()
-
-    def send(self, event: Event) -> None:
+    def signed_request(self, event: Event) -> tuple[bytes, dict[str, str]]:
+        """Body and headers together, so the signature is over the exact bytes posted."""
         body = event.body()
         headers = {
             "Content-Type": "application/json",
             self.dedup_header: event.id,
-            self.signature_header: self._signature(body),
+            self.signature_header: hmac.new(self.signing_secret, body, hashlib.sha256).hexdigest(),
         }
+        return body, headers
+
+    def send(self, event: Event) -> None:
+        body, headers = self.signed_request(event)
         last = None
         for attempt in range(1, self.max_attempts + 1):
             response = self.session.post(self.url, data=body, headers=headers, timeout=15)
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < self.max_attempts:
+            if response.status_code in RETRY_STATUSES and attempt < self.max_attempts:
                 delay = self.backoff_seconds * (2 ** (attempt - 1))
                 log.warning("webhook post -> %s; retry %d in %.1fs", response.status_code, attempt, delay)
                 self._sleep(delay)

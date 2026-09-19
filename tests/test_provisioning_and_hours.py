@@ -72,6 +72,37 @@ def test_newly_blocked_worker_is_revoked_once(populated):
     assert prov.calls[-1] == ("deactivate", ruiz.worker_id)
     assert ruiz.worker_id not in prov.active
 
+    calls = len(prov.calls)
+    again = sync_access(report, store, prov)
+    assert len(prov.calls) == calls, "revoked once, not once per run"
+    assert ruiz.worker_id in again.unchanged
+
+
+def test_leaver_is_revoked_through_inactive_and_only_once(populated):
+    store, registry, ruiz, fontenot = populated
+    store.grant_credential(Credential(fontenot.worker_id, "ppe_issued", D1))
+    prov = InMemoryProvisioner()
+    sync_access(build_report(registry.workers, store.all_credentials(), REQ, D1), store, prov)
+    state, original_ref = store.access_state(fontenot.worker_id)
+    assert state == "active"
+
+    # Two further roster periods without her; the second makes her a leaver.
+    still_here = [row("Tomas", "Ruiz", "8325550214", "tr@example.com")]
+    compute_diff(registry, still_here, D2)
+    diff = compute_diff(registry, still_here, D3)
+    assert diff.leavers == [fontenot]
+
+    # build_report skips inactive workers, so `inactive` is the only route to her badge.
+    report = build_report(registry.workers, store.all_credentials(), REQ, D3)
+    outcome = sync_access(report, store, prov, inactive=diff.leavers)
+    assert outcome.deactivated == [fontenot.worker_id]
+    assert prov.calls[-1] == ("deactivate", fontenot.worker_id)
+    assert store.access_state(fontenot.worker_id) == ("revoked", original_ref)
+
+    calls = len(prov.calls)
+    sync_access(report, store, prov, inactive=diff.leavers)
+    assert len(prov.calls) == calls, "a rerun does not revoke her again"
+
 
 def test_failure_on_one_worker_does_not_stop_the_others(populated):
     store, registry, ruiz, fontenot = populated
@@ -122,10 +153,31 @@ def test_http_provisioner_retries_on_429_then_succeeds(populated):
                            session, backoff_seconds=0.1, sleep=slept.append)
     assert prov.activate(ruiz) == "B-1"
     assert slept == [0.1, 0.2], "exponential backoff"
-    grant = [r for r in session.requests if r[1].endswith("/grants")][0]
-    assert grant[2]["headers"]["Idempotency-Key"] == ruiz.worker_id
-    assert grant[2]["headers"]["Authorization"] == "Bearer tok"
+    grants = [r for r in session.requests if r[1].endswith("/grants")]
+    assert len(grants) == 3
+    # The retry is the request the key exists for, so every attempt must carry it.
+    assert [g[2]["headers"].get("Idempotency-Key") for g in grants] == [ruiz.worker_id] * 3
+    assert all(g[2]["headers"]["Authorization"] == "Bearer tok" for g in grants)
     assert sum(1 for r in session.requests if r[1].endswith("/token")) == 1, "token cached across retries"
+
+
+def test_http_provisioner_refreshes_the_token_once_on_401(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(401), FakeResponse(201, {"reference": "B-1"})])
+    prov = HttpProvisioner("https://access.example/api",
+                           OAuthClientCredentials("https://access.example/token", "id", "secret"),
+                           session, sleep=lambda _: None)
+    assert prov.activate(ruiz) == "B-1"
+    assert sum(1 for r in session.requests if r[1].endswith("/token")) == 2, "401 forces one refresh"
+    grants = [r for r in session.requests if r[1].endswith("/grants")]
+    assert len(grants) == 2
+    assert grants[1][2]["headers"].get("Idempotency-Key") == ruiz.worker_id
+
+
+def test_oauth_credentials_keep_the_secret_out_of_repr_and_the_cache_out_of_init():
+    assert "SUPERSECRET" not in repr(OAuthClientCredentials("https://a/token", "id", "SUPERSECRET"))
+    with pytest.raises(TypeError):
+        OAuthClientCredentials("https://a/token", "id", "s", _token="preset")
 
 
 def test_http_provisioner_gives_up_after_max_attempts(populated):
@@ -135,6 +187,39 @@ def test_http_provisioner_gives_up_after_max_attempts(populated):
                            session, max_attempts=4, sleep=lambda _: None)
     with pytest.raises(ProvisioningError):
         prov.activate(ruiz)
+
+
+def http_provisioner(session, **kw):
+    return HttpProvisioner("https://access.example/api",
+                           OAuthClientCredentials("https://access.example/token", "id", "secret"),
+                           session, sleep=lambda _: None, **kw)
+
+
+def test_http_deactivate_deletes_by_external_ref_and_accepts_404(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(204), FakeResponse(404)])
+    prov = http_provisioner(session)
+    prov.deactivate(ruiz, "B-1")
+    prov.deactivate(ruiz, "B-1")  # already gone at the access system: the wanted state, not an error
+
+    deletes = [r for r in session.requests if r[0] == "delete"]
+    assert [d[1] for d in deletes] == ["https://access.example/api/access/grants/B-1"] * 2
+    assert [d[2]["headers"].get("Idempotency-Key") for d in deletes] == [ruiz.worker_id] * 2
+
+
+def test_http_deactivate_without_an_external_ref_makes_no_request(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([])
+    http_provisioner(session).deactivate(ruiz, None)
+    assert session.requests == [], "nothing was granted, so not even a token is fetched"
+
+
+def test_http_deactivate_gives_up_after_max_attempts(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(500)] * 4)
+    with pytest.raises(ProvisioningError):
+        http_provisioner(session, max_attempts=4).deactivate(ruiz, "B-1")
+    assert sum(1 for r in session.requests if r[0] == "delete") == 4
 
 
 # -- hours ----------------------------------------------------------------
@@ -165,14 +250,39 @@ def test_present_but_not_badged_at_site_is_distinguished():
 
 def test_without_a_site_feed_two_way_still_works():
     report = reconcile([rec(AGENCY, "w", D1, 8)], [rec(SCANNER, "w", D1, 7)], None, D1, D1)
-    assert report.site_feed_present is False
     assert report.workers[0].site is None
     assert report.workers[0].days[0].reading == "agency over-reported"
 
 
+@pytest.mark.parametrize("agency,scanner,site,reading", [
+    (6, 8, 8, "agency under-reported"),
+    (8, 6, 4, "mixed variance"),
+])
+def test_three_way_under_reported_and_mixed_variance(agency, scanner, site, reading):
+    report = reconcile([rec(AGENCY, "w", D1, agency)], [rec(SCANNER, "w", D1, scanner)],
+                       [rec(SITE, "w", D1, site)], D1, D1)
+    assert report.workers[0].days[0].reading == reading
+
+
+def test_split_shift_punches_sum_and_days_outside_the_period_are_excluded():
+    agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8), rec(AGENCY, "w", D3, 8)]
+    # Out for lunch and back in is two punch pairs on one day.
+    scanner = [rec(SCANNER, "w", D2, 4), rec(SCANNER, "w", D2, 4)]
+    worker = reconcile(agency, scanner, None, D2, D2).workers[0]
+
+    assert [(d.day, d.agency, d.scanner, d.reading) for d in worker.days] == [(D2, 8, 8, "clean")]
+    assert (worker.agency, worker.scanner) == (8, 8), "D1 and D3 are outside the period"
+
+
 def test_tolerance_absorbs_rounding():
-    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, 7.8)], None, D1, D1, tolerance_hours=0.25)
+    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, 7.8)], None, D1, D1)
     assert report.workers[0].clean
+
+
+@pytest.mark.parametrize("scanner,clean", [(7.75, True), (7.74, False)])
+def test_tolerance_boundary_is_inclusive(scanner, clean):
+    report = reconcile([rec(AGENCY, "w", D1, 8.0)], [rec(SCANNER, "w", D1, scanner)], None, D1, D1)
+    assert report.workers[0].clean is clean
 
 
 def test_agency_rows_resolve_through_registry_and_unknowns_are_not_guessed(tmp_path, populated):
@@ -190,6 +300,35 @@ def test_agency_rows_resolve_through_registry_and_unknowns_are_not_guessed(tmp_p
     assert len(unresolved) == 1 and "new" in unresolved[0].reason
 
 
+def test_agency_row_matching_on_name_alone_is_given_no_hours(tmp_path, populated):
+    _, registry, _, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Tomas,Ruiz,832-555-0999,,2024-07-15,8\n"
+    )
+    # Same rule as the roster: a name is not enough to attribute invoice hours to a person.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert records == []
+    assert [(u.line, u.reason) for u in unresolved] == [(2, "identity weak_name")]
+
+
+def test_short_agency_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path, populated):
+    _, registry, ruiz, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-15,8\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-16\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-17,8.5\n"
+    )
+    # csv.DictReader hands a truncated line None for the missing cells; one such line must not abort the file.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert [(r.worker_id, r.day, r.hours) for r in records] == [(ruiz.worker_id, D1, 8.0), (ruiz.worker_id, D3, 8.5)]
+    assert [(u.source, u.line) for u in unresolved] == [(AGENCY, 3)]
+    assert "float" in unresolved[0].reason
+
+
 def test_punch_log_computes_hours_and_flags_missing_out(tmp_path):
     p = tmp_path / "scan.csv"
     p.write_text("worker_id,date,in,out\nw,2024-07-15,06:00,14:30\nw,2024-07-16,06:00,\nw,2024-07-17,22:00,06:00\n")
@@ -197,6 +336,17 @@ def test_punch_log_computes_hours_and_flags_missing_out(tmp_path):
     assert [r.hours for r in records] == [8.5, 0.0, 8.0]
     assert records[1].note == "missing out-punch"
     assert unresolved == []
+
+
+def test_short_punch_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path):
+    p = tmp_path / "scan.csv"
+    p.write_text("worker_id,date,in,out\nw,2024-07-15,06:00,14:30\nw\nw,2024-07-16,06:00\nw,2024-07-17,06:00,14:00\n")
+    records, unresolved = read_punch_log(p, SCANNER)
+    # A line cut before the date cannot be placed on a day; a line cut before "out" is an empty out cell.
+    assert [(r.day, r.hours, r.note) for r in records] == [
+        (D1, 8.5, ""), (D2, 0.0, "missing out-punch"), (D3, 8.0, "")]
+    assert [(u.source, u.line) for u in unresolved] == [(SCANNER, 3)]
+    assert "date" in unresolved[0].reason
 
 
 def test_overnight_shift_on_the_last_day_of_a_month(tmp_path):

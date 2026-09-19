@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from datetime import date
 
@@ -30,6 +32,13 @@ def test_event_id_differs_by_type_subject_or_period():
     assert event_id("worker.left", "w-1", D1) != base
     assert event_id("worker.joined", "w-2", D1) != base
     assert event_id("worker.joined", "w-1", D2) != base
+
+
+def test_event_id_is_pinned_to_a_golden_value():
+    # The receiver deduplicates on this id. Changing EVENT_ID_NAMESPACE or the
+    # name format gives every in-flight event a new id, and a re-sent event
+    # would then be processed a second time.
+    assert event_id("worker.joined", "w-1", date(2024, 7, 15)) == "36d4c58c-252a-5a6d-81ea-ac1d2e71c893"
 
 
 def test_worker_joined_event_payload_shape():
@@ -71,12 +80,11 @@ def test_events_for_diff_only_emits_joiners():
 # -- in-memory sender ---------------------------------------------------
 
 
-def test_in_memory_sender_records_sent_events_and_dedup_ids():
+def test_in_memory_sender_records_sent_events():
     sender = InMemoryEventSender()
     event = worker_joined_event(worker(), D1)
     sender.send(event)
     assert sender.sent == [event]
-    assert sender.dedup_ids_seen == {event.id}
 
 
 def test_emit_diff_reports_sent_ids():
@@ -132,38 +140,30 @@ def test_webhook_sender_signs_body_and_sets_dedup_header():
     assert url == "https://hooks.example/worker_joined"
     assert kwargs["data"] == event.body()
     assert kwargs["headers"]["X-Dedup-Id"] == event.id
-    assert len(kwargs["headers"]["X-Signature-256"]) == 64, "hex-encoded sha256 digest"
+    # Recomputed over the bytes actually posted, with the shared secret.
+    expected = hmac.new(b"s3cret", kwargs["data"], hashlib.sha256).hexdigest()
+    assert kwargs["headers"]["X-Signature-256"] == expected
 
 
-def test_webhook_sender_same_event_twice_produces_same_dedup_header():
-    session = FakeSession([FakeResponse(200), FakeResponse(200)])
-    sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session)
-    event = worker_joined_event(worker(), D1)
-
-    sender.send(event)
-    sender.send(event)
-
-    first_headers = session.requests[0][1]["headers"]
-    second_headers = session.requests[1][1]["headers"]
-    assert first_headers["X-Dedup-Id"] == second_headers["X-Dedup-Id"]
-
-
-def test_webhook_sender_retries_on_503_then_succeeds():
-    session = FakeSession([FakeResponse(503), FakeResponse(200)])
+def test_webhook_sender_retries_on_429_and_503_then_succeeds():
+    session = FakeSession([FakeResponse(429), FakeResponse(503), FakeResponse(200)])
     slept = []
     sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session,
                                 backoff_seconds=0.1, sleep=slept.append)
     sender.send(worker_joined_event(worker(), D1))
-    assert slept == [0.1]
-    assert len(session.requests) == 2
+    assert slept == [0.1, 0.2]
+    assert len(session.requests) == 3
 
 
 def test_webhook_sender_gives_up_after_max_attempts():
     session = FakeSession([FakeResponse(503)] * 4)
+    slept = []
     sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session,
-                                max_attempts=4, sleep=lambda _: None)
+                                max_attempts=4, backoff_seconds=0.5, sleep=slept.append)
     with pytest.raises(DeliveryError):
         sender.send(worker_joined_event(worker(), D1))
+    assert len(session.requests) == 4
+    assert slept == [0.5, 1.0, 2.0], "no sleep after the last attempt"
 
 
 def test_webhook_sender_raises_on_non_retryable_failure():

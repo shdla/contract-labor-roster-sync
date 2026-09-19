@@ -1,10 +1,14 @@
-"""SQLite persistence for the worker registry and the review queue.
+"""SQLite persistence for everything that must survive between runs: workers
+and their identifiers, roster periods, the review queue, credentials, access
+state and the badge map.
 
 State has to survive between runs for three reasons. The registry is only
 useful if this week's file can be compared against last week's population.
 Absence is derived from the set of roster periods already processed, so that
 set must persist. And a review flag a human has resolved must stay resolved,
 or the same question returns every week until people stop reading the queue.
+Credentials, pushed access state and badge ids persist for the same reason,
+because the gate and idempotent provisioning read them.
 
 Storage is deliberately kept behind this module: identity.py and diff.py
 know nothing about it, so the matching logic stays testable in memory.
@@ -22,7 +26,7 @@ from pathlib import Path
 
 from .credentials import Credential
 from .identity import WorkerRegistry
-from .models import MatchResult, RosterRow, Worker
+from .models import MatchConfidence, MatchResult, RosterRow, Worker
 from .normalize import NormalizedName
 
 SCHEMA = """
@@ -133,9 +137,8 @@ class PendingReview:
 
     review_id: str
     as_of: date
-    source_row: int | None
     row: RosterRow
-    confidence: str
+    confidence: MatchConfidence
     note: str
     candidate_ids: list[str]
 
@@ -148,11 +151,13 @@ class PendingReview:
             if registry.get(i) is not None
         ]
         against = f" against {', '.join(names)}" if names else ""
-        return f"[{self.confidence}] {name} / {contact}{against} — {self.note}"
+        # .value is explicit: an f-string renders a str-mixin enum member as "weak_name" on
+        # Python 3.9 but as "MatchConfidence.WEAK_NAME" from 3.11.
+        return f"[{self.confidence.value}] {name} / {contact}{against} — {self.note}"
 
 
 class Store:
-    """A SQLite-backed home for the registry and the review queue."""
+    """A SQLite-backed home for all persisted state."""
 
     def __init__(self, path: str | Path = "roster.db") -> None:
         self.path = str(path)
@@ -244,18 +249,13 @@ class Store:
     def record_period(self, as_of: date, source_path: str | None = None,
                       digest: str | None = None) -> bool:
         """Record a processed roster period. False if it was already recorded."""
-        existing = self._connection.execute(
-            "SELECT file_hash FROM roster_periods WHERE as_of = ?", (as_of.isoformat(),)
-        ).fetchone()
-        if existing is not None:
-            return False
         with self._connection:
-            self._connection.execute(
+            cursor = self._connection.execute(
                 "INSERT INTO roster_periods (as_of, file_hash, source_path, processed_at)"
-                " VALUES (?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?) ON CONFLICT(as_of) DO NOTHING",
                 (as_of.isoformat(), digest, source_path, _now()),
             )
-        return True
+        return cursor.rowcount == 1
 
     def period_hash(self, as_of: date) -> str | None:
         row = self._connection.execute(
@@ -266,7 +266,7 @@ class Store:
     # -- review queue -----------------------------------------------------
 
     def save_reviews(self, results: list[MatchResult], as_of: date) -> list[str]:
-        """Persist flagged rows. Re-flagging the same row does not duplicate it."""
+        """Persist flagged rows and return the ids created. Re-flagging the same row does not duplicate it."""
         created: list[str] = []
         with self._connection:
             for result in results:
@@ -280,17 +280,13 @@ class Store:
                     ]
                 )
                 review_id = str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint))
-                exists = self._connection.execute(
-                    "SELECT 1 FROM pending_reviews WHERE review_id = ?", (review_id,)
-                ).fetchone()
-                if exists:
-                    continue
-                self._connection.execute(
+                cursor = self._connection.execute(
                     """
                     INSERT INTO pending_reviews
                         (review_id, as_of, source_row, first_name, last_name, phone,
                          email, role, confidence, note, candidates, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(review_id) DO NOTHING
                     """,
                     (
                         review_id,
@@ -307,7 +303,8 @@ class Store:
                         _now(),
                     ),
                 )
-                created.append(review_id)
+                if cursor.rowcount == 1:
+                    created.append(review_id)
         return created
 
     def open_reviews(self) -> list[PendingReview]:
@@ -427,7 +424,6 @@ class Store:
         return PendingReview(
             review_id=row["review_id"],
             as_of=date.fromisoformat(row["as_of"]),
-            source_row=row["source_row"],
             row=RosterRow(
                 source_row=row["source_row"] or 0,
                 name=name,
@@ -435,7 +431,7 @@ class Store:
                 email=row["email"],
                 role=row["role"],
             ),
-            confidence=row["confidence"],
+            confidence=MatchConfidence(row["confidence"]),
             note=row["note"] or "",
             candidate_ids=[i for i in (row["candidates"] or "").split(",") if i],
         )
