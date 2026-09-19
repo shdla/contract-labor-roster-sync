@@ -113,9 +113,11 @@ class HttpProvisioner:
     def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}{path}"
         last = None
+        # Popped once: a pop inside the loop would strip the caller's headers from every retry.
+        extra = kwargs.pop("headers", {})
         for attempt in range(1, self.max_attempts + 1):
-            headers = {"Authorization": f"Bearer {self.credentials.token(self.session)}",
-                       **kwargs.pop("headers", {})}
+            # Authorization is rebuilt per attempt so a 401 refresh takes effect.
+            headers = {"Authorization": f"Bearer {self.credentials.token(self.session)}", **extra}
             response = getattr(self.session, method)(url, headers=headers, timeout=15, **kwargs)
             if response.status_code == 401 and attempt == 1:
                 self.credentials._token = None  # force refresh once, then treat as failure

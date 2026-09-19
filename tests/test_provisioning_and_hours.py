@@ -122,10 +122,25 @@ def test_http_provisioner_retries_on_429_then_succeeds(populated):
                            session, backoff_seconds=0.1, sleep=slept.append)
     assert prov.activate(ruiz) == "B-1"
     assert slept == [0.1, 0.2], "exponential backoff"
-    grant = [r for r in session.requests if r[1].endswith("/grants")][0]
-    assert grant[2]["headers"]["Idempotency-Key"] == ruiz.worker_id
-    assert grant[2]["headers"]["Authorization"] == "Bearer tok"
+    grants = [r for r in session.requests if r[1].endswith("/grants")]
+    assert len(grants) == 3
+    # The retry is the request the key exists for, so every attempt must carry it.
+    assert [g[2]["headers"].get("Idempotency-Key") for g in grants] == [ruiz.worker_id] * 3
+    assert all(g[2]["headers"]["Authorization"] == "Bearer tok" for g in grants)
     assert sum(1 for r in session.requests if r[1].endswith("/token")) == 1, "token cached across retries"
+
+
+def test_http_provisioner_refreshes_the_token_once_on_401(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(401), FakeResponse(201, {"reference": "B-1"})])
+    prov = HttpProvisioner("https://access.example/api",
+                           OAuthClientCredentials("https://access.example/token", "id", "secret"),
+                           session, sleep=lambda _: None)
+    assert prov.activate(ruiz) == "B-1"
+    assert sum(1 for r in session.requests if r[1].endswith("/token")) == 2, "401 forces one refresh"
+    grants = [r for r in session.requests if r[1].endswith("/grants")]
+    assert len(grants) == 2
+    assert grants[1][2]["headers"].get("Idempotency-Key") == ruiz.worker_id
 
 
 def test_http_provisioner_gives_up_after_max_attempts(populated):
