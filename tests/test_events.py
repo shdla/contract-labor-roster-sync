@@ -80,12 +80,11 @@ def test_events_for_diff_only_emits_joiners():
 # -- in-memory sender ---------------------------------------------------
 
 
-def test_in_memory_sender_records_sent_events_and_dedup_ids():
+def test_in_memory_sender_records_sent_events():
     sender = InMemoryEventSender()
     event = worker_joined_event(worker(), D1)
     sender.send(event)
     assert sender.sent == [event]
-    assert [e.id for e in sender.sent] == [event.id]
 
 
 def test_emit_diff_reports_sent_ids():
