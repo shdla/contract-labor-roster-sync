@@ -176,6 +176,23 @@ def test_confirming_merges_identifiers_so_the_flag_never_returns(store):
     assert len(registry.workers) == 1
 
 
+def test_confirming_dates_the_sighting_to_the_period_that_carried_the_row(store):
+    registry = store.load_registry()
+    compute_diff(registry, [row("Curtis", "Delaney", "832.555.0266")], WEEK_1)
+    store.save_registry(registry)
+    curtis = registry.workers[0]
+
+    # Flagged directly, so nothing but confirm can move last_seen off week 1.
+    flagged = registry.match(row("Curtis", "Delaney", "832.555.0999"))
+    (review_id,) = store.save_reviews([flagged], WEEK_2)
+
+    confirm(store, registry, review_id, curtis.worker_id, decided_by="a.diaz")
+
+    # Absence is derived from roster periods, so the sighting carries the
+    # period of the file, not the day somebody answered the flag.
+    assert curtis.last_seen == WEEK_2
+
+
 def test_rejecting_creates_a_second_person_deliberately(store):
     registry = store.load_registry()
     compute_diff(registry, [row("Chris", "Nguyen", "832.555.0101", "cn1@example.com")], WEEK_1)
@@ -212,9 +229,19 @@ def test_decision_is_attributed_and_survives_a_restart(tmp_path):
     with Store(path) as second:
         registry = second.load_registry()
         assert second.open_reviews() == []
-        assert second.get_review(review_id) is not None
+        decided = second.get_review(review_id)
+        assert (decided.decision, decided.decided_by, decided.decided_worker_id) == (
+            "confirmed", "a.diaz", worker_id)
+        assert decided.decided_at is not None
         # The merged phone came back with the worker.
         assert "+18325550999" in registry.workers[0].phones
+
+        # Deciding again, by either route, must not replace who decided first.
+        with pytest.raises(ReviewResolutionError, match="already confirmed"):
+            confirm(second, registry, review_id, worker_id, decided_by="someone.else")
+        with pytest.raises(ReviewResolutionError, match="already confirmed"):
+            reject(second, registry, review_id, decided_by="someone.else")
+        assert second.get_review(review_id).decided_by == "a.diaz"
 
 
 def flag_the_same_row_in_two_weeks(store):
@@ -255,6 +282,30 @@ def test_confirming_a_stale_flag_whose_duplicate_was_rejected_is_refused(store):
     with pytest.raises(ReviewResolutionError):
         confirm(store, registry, week3_flag, curtis.worker_id, decided_by="a.diaz")
     assert "+18325550999" not in curtis.phones
+
+
+def test_resolving_an_unknown_review_is_refused(store):
+    with pytest.raises(ReviewResolutionError, match="no review"):
+        reject(store, store.load_registry(), "no-such-review", decided_by="a.diaz")
+
+
+def test_confirming_onto_an_unknown_worker_is_refused(store):
+    registry, (week2_flag, _) = flag_the_same_row_in_two_weeks(store)
+    with pytest.raises(ReviewResolutionError, match="no worker"):
+        confirm(store, registry, week2_flag, "no-such-worker", decided_by="a.diaz")
+
+
+def test_store_keeps_the_first_decision_when_asked_to_record_a_second(store):
+    registry, (week2_flag, _) = flag_the_same_row_in_two_weeks(store)
+    curtis_id = registry.workers[0].worker_id
+
+    # The backstop under review.py: written straight to the store, past its check.
+    store.record_decision(week2_flag, "confirmed", curtis_id, "a.diaz")
+    store.record_decision(week2_flag, "rejected", None, "someone.else")
+
+    decided = store.get_review(week2_flag)
+    assert (decided.decision, decided.decided_worker_id, decided.decided_by) == (
+        "confirmed", curtis_id, "a.diaz")
 
 
 def test_conflict_flag_cannot_give_a_held_phone_a_second_owner(tmp_path):

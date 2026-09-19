@@ -133,7 +133,11 @@ def _as_date(text: str | None) -> date | None:
 
 @dataclass
 class PendingReview:
-    """A flagged row awaiting a human decision, rehydrated from storage."""
+    """A flagged row rehydrated from storage, with the decision once a human has made one.
+
+    The decision fields are exposed so the audit record can be read back and
+    so review.py can refuse to decide the same flag twice.
+    """
 
     review_id: str
     as_of: date
@@ -141,6 +145,10 @@ class PendingReview:
     confidence: MatchConfidence
     note: str
     candidate_ids: list[str]
+    decision: str | None = None
+    decided_worker_id: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
 
     def describe(self, registry: WorkerRegistry) -> str:
         name = self.row.name.display if self.row.name else "(unnamed)"
@@ -335,12 +343,14 @@ class Store:
 
     def record_decision(self, review_id: str, decision: str,
                         worker_id: str | None, decided_by: str) -> None:
+        """Record who decided a flag and when. The first decision stands: the
+        WHERE clause keeps a later call from overwriting the audit record."""
         with self._connection:
             self._connection.execute(
                 """
                 UPDATE pending_reviews
                    SET decision = ?, decided_worker_id = ?, decided_by = ?, decided_at = ?
-                 WHERE review_id = ?
+                 WHERE review_id = ? AND decision IS NULL
                 """,
                 (decision, worker_id, decided_by, _now(), review_id),
             )
@@ -448,4 +458,8 @@ class Store:
             confidence=MatchConfidence(row["confidence"]),
             note=row["note"] or "",
             candidate_ids=[i for i in (row["candidates"] or "").split(",") if i],
+            decision=row["decision"],
+            decided_worker_id=row["decided_worker_id"],
+            decided_by=row["decided_by"],
+            decided_at=row["decided_at"],
         )

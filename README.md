@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 126 tests
+idempotent sync · three-way data reconciliation · 130 tests
 
 ## Scenario
 
@@ -80,7 +80,8 @@ week and never reaches the queue again. Rejecting creates a second worker
 deliberately, with the same effect. A queue that cannot be cleared is an
 alert, and people stop reading alerts. Decisions record who made them and
 when, because deactivating somebody's site access on a judgment call is the
-kind of thing that gets asked about later.
+kind of thing that gets asked about later. A decided flag cannot be decided
+again, so that record is never overwritten.
 
 **The eligibility gate blocks on uncertainty.** A worker whose role could
 not be mapped is blocked, never defaulted to the least-demanding role. An
@@ -156,7 +157,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               126 tests covering normalization, matching, diffing,
+tests/               130 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -169,7 +170,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 126 tests
+python -m pytest tests/ -q            # 130 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

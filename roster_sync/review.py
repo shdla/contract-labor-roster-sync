@@ -92,9 +92,12 @@ def reject(
 
 
 def _load_open(store: Store, review_id: str) -> PendingReview:
+    """Load a flag that is still undecided. A second decision would overwrite who made the first."""
     review = store.get_review(review_id)
     if review is None:
         raise ReviewResolutionError(f"no review {review_id}")
+    if review.decision is not None:
+        raise ReviewResolutionError(f"review {review_id} already {review.decision}")
     return review
 
 
