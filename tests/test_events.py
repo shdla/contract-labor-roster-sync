@@ -210,7 +210,7 @@ def test_webhook_sender_gives_up_after_max_attempts():
     slept = []
     sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session,
                                 max_attempts=4, backoff_seconds=0.5, sleep=slept.append)
-    with pytest.raises(DeliveryError):
+    with pytest.raises(DeliveryError, match=r"after 4 attempt\(s\): status 503"):
         sender.send(worker_joined_event(worker(), D1))
     assert len(session.requests) == 4
     assert slept == [0.5, 1.0, 2.0], "no sleep after the last attempt"
@@ -219,5 +219,32 @@ def test_webhook_sender_gives_up_after_max_attempts():
 def test_webhook_sender_raises_on_non_retryable_failure():
     session = FakeSession([FakeResponse(400)])
     sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session)
-    with pytest.raises(DeliveryError):
+    with pytest.raises(DeliveryError, match=r"after 1 attempt\(s\): status 400"):
         sender.send(worker_joined_event(worker(), D1))
+
+
+def test_transport_error_on_one_event_is_retried_recorded_and_does_not_stop_the_rest():
+    diff = RosterDiff(as_of=D1, joiners=[
+        worker("Tomas", "Ruiz", worker_id="w-1"),
+        worker("Alicia", "Fontenot", ("8325550288",), ("af@example.com",), worker_id="w-2"),
+    ])
+    first = event_id("worker.joined", "w-1", D1)
+
+    class TimesOutForTheFirstEvent(FakeSession):
+        def post(self, url, **kw):
+            if kw["headers"]["X-Dedup-Id"] == first:
+                self.requests.append((url, kw))
+                raise TimeoutError("read timed out")
+            return super().post(url, **kw)
+
+    session = TimesOutForTheFirstEvent([FakeResponse(200)])
+    slept = []
+    sender = WebhookEventSender("https://hooks.example/worker_joined", "s3cret", session,
+                                max_attempts=4, backoff_seconds=0.5, sleep=slept.append)
+    outcome = emit_diff(diff, sender)
+
+    assert outcome.summary() == {"sent": 1, "failed": 1}
+    assert outcome.failed[0][0] == first
+    assert "after 4 attempt(s): TimeoutError" in outcome.failed[0][1]
+    assert len(session.requests) == 5, "four tries for the first event, then the second is still sent"
+    assert slept == [0.5, 1.0, 2.0], "a timeout backs off like a 503"

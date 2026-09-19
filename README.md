@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 158 tests
+idempotent sync · three-way data reconciliation · 167 tests
 
 ## Scenario
 
@@ -112,11 +112,12 @@ state, so the next run tries again rather than believing a lie.
 
 **The access system is reached through an adapter.** An HTTP implementation
 authenticates with OAuth 2.0 client credentials, caches the token until
-shortly before expiry, and retries 429 and 5xx with exponential backoff. An
-in-memory implementation covers tests, demos, and the real case where the
-customer's security team has not approved API access yet. The sync logic is
-identical either way: design for the access the customer will actually
-grant, and swap the adapter when better access lands.
+shortly before expiry, and retries 429, 5xx and transport errors (timeout,
+connection reset) with exponential backoff. An in-memory implementation
+covers tests, demos, and the real case where the customer's security team
+has not approved API access yet. The sync logic is identical either way:
+design for the access the customer will actually grant, and swap the adapter
+when better access lands.
 
 **Hours are reconciled three ways, not two.** Two sources show that the
 numbers disagree; three show which one is wrong. Agency over-reporting,
@@ -171,7 +172,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               158 tests covering normalization, matching, diffing,
+tests/               167 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -184,7 +185,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 158 tests
+python -m pytest tests/ -q            # 167 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
@@ -334,3 +335,6 @@ compact separators.
   no `sha256=` prefix.
 - A 429, 500, 502, 503 or 504 is retried, up to four attempts in total, with
   the same id each time, so the receiver must deduplicate on `X-Dedup-Id`.
+  A transport error (timeout, connection reset) is retried the same way: the
+  post may have arrived before the connection dropped, which is the same
+  reason to deduplicate.

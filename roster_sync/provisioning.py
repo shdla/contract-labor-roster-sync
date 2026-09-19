@@ -8,11 +8,12 @@ against an unchanged population makes zero calls.
 
 The access system is reached through a Provisioner adapter. The HTTP
 implementation authenticates with OAuth 2.0 client credentials, caches the
-token until shortly before expiry, retries on 429 and 5xx with exponential
-backoff, and sends the worker id as an idempotency key so a retried request
-cannot create a duplicate badge. An in-memory implementation exists for
-tests and demos, and for the case where the customer's security team has
-not yet approved API access — the sync logic is identical either way.
+token until shortly before expiry, retries on 429, 5xx and transport errors
+with exponential backoff, and sends the worker id as an idempotency key so a
+retried request cannot create a duplicate badge. An in-memory implementation
+exists for tests and demos, and for the case where the customer's security
+team has not yet approved API access — the sync logic is identical either
+way.
 """
 
 from __future__ import annotations
@@ -107,8 +108,12 @@ class OAuthClientCredentials:
         response = session.post(self.token_url, data=payload, timeout=15)
         if response.status_code != 200:
             raise ProvisioningError(f"token endpoint returned {response.status_code}")
-        body = response.json()
-        self._token = body["access_token"]
+        try:
+            body = response.json()
+            self._token = body["access_token"]
+        except (KeyError, ValueError) as exc:
+            # Raised as ProvisioningError so sync_access records it against the worker instead of aborting the run.
+            raise ProvisioningError("token endpoint returned 200 without an access_token") from exc
         self._expires_at = time.time() + int(body.get("expires_in", 3600))
         return self._token
 
@@ -130,26 +135,33 @@ class HttpProvisioner:
 
     def _request(self, method: str, path: str, **kwargs) -> HttpResponse:
         url = f"{self.base_url}{path}"
-        last = None
         # Popped once: a pop inside the loop would strip the caller's headers from every retry.
         extra = kwargs.pop("headers", {})
         for attempt in range(1, self.max_attempts + 1):
-            # Authorization is rebuilt per attempt so a 401 refresh takes effect.
-            headers = {"Authorization": f"Bearer {self.credentials.token(self.session)}", **extra}
-            response = getattr(self.session, method)(url, headers=headers, timeout=15, **kwargs)
-            if response.status_code == 401 and attempt == 1:
-                self.credentials.invalidate()  # force refresh once, then treat as failure
-                continue
-            if response.status_code in self.RETRY_STATUSES and attempt < self.max_attempts:
+            try:
+                # Authorization is rebuilt per attempt so a 401 refresh takes effect. The token fetch
+                # is inside the try so a transport error from the token endpoint is retried too.
+                headers = {"Authorization": f"Bearer {self.credentials.token(self.session)}", **extra}
+                response = getattr(self.session, method)(url, headers=headers, timeout=15, **kwargs)
+            except OSError as exc:
+                # requests.RequestException, urllib.error.URLError, TimeoutError and ConnectionError all
+                # subclass OSError, so requests is not imported; a library whose errors do not needs its own adapter.
+                outcome = f"{type(exc).__name__}: {exc}"
+            else:
+                if response.status_code == 401 and attempt == 1:
+                    self.credentials.invalidate()  # force refresh once, then treat as failure
+                    outcome = "status 401"
+                    continue
+                if response.status_code not in self.RETRY_STATUSES:
+                    return response
+                outcome = f"status {response.status_code}"
+            if attempt < self.max_attempts:
                 delay = self.backoff_seconds * (2 ** (attempt - 1))
                 log.warning("access api %s %s -> %s; retry %d in %.1fs",
-                            method.upper(), path, response.status_code, attempt, delay)
+                            method.upper(), path, outcome, attempt, delay)
                 self._sleep(delay)
-                last = response
-                continue
-            return response
-        raise ProvisioningError(f"{method.upper()} {path} failed after {self.max_attempts} attempts"
-                                f" (last status {last.status_code if last else 'n/a'})")
+        # ProvisioningError is what sync_access isolates, so a timeout fails one worker and not the run.
+        raise ProvisioningError(f"{method.upper()} {path} failed after {self.max_attempts} attempts: {outcome}")
 
     def activate(self, worker: Worker) -> str:
         body = {"external_id": worker.worker_id, "display_name": worker.name.display,
@@ -158,7 +170,12 @@ class HttpProvisioner:
                                  headers={"Idempotency-Key": worker.worker_id})
         if response.status_code not in (200, 201):
             raise ProvisioningError(f"activate {worker.worker_id}: {response.status_code}")
-        return response.json()["reference"]
+        try:
+            return response.json()["reference"]
+        except (KeyError, ValueError) as exc:
+            # No state is recorded, so the next run re-sends under the same Idempotency-Key.
+            raise ProvisioningError(
+                f"activate {worker.worker_id}: {response.status_code} without a reference") from exc
 
     def deactivate(self, worker: Worker, external_ref: str | None) -> None:
         if not external_ref:
