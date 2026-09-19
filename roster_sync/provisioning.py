@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from .credentials import EligibilityReport
 from .models import Worker
+from .store import Store
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +66,22 @@ class InMemoryProvisioner:
 # -- http -------------------------------------------------------------------
 
 
+class HttpResponse(Protocol):
+    """The part of a response this module reads."""
+
+    status_code: int
+
+    def json(self) -> dict: ...
+
+
+class HttpSession(Protocol):
+    """The part of a session this module calls; requests.Session satisfies it, and tests inject a fake."""
+
+    def post(self, url: str, **kwargs) -> HttpResponse: ...
+
+    def delete(self, url: str, **kwargs) -> HttpResponse: ...
+
+
 @dataclass
 class OAuthClientCredentials:
     token_url: str
@@ -79,7 +97,7 @@ class OAuthClientCredentials:
         """Drop the cached token so the next token() call fetches a new one."""
         self._token = None
 
-    def token(self, session) -> str:
+    def token(self, session: HttpSession) -> str:
         if self._token and time.time() < self._expires_at - self.refresh_margin_seconds:
             return self._token
         payload = {"grant_type": "client_credentials", "client_id": self.client_id,
@@ -96,17 +114,13 @@ class OAuthClientCredentials:
 
 
 class HttpProvisioner:
-    """Provisioner over a REST access API.
-
-    session is any object with .post/.delete returning objects that expose
-    .status_code and .json(); requests.Session satisfies this, and tests
-    inject a fake.
-    """
+    """Provisioner over a REST access API, reached through an HttpSession."""
 
     RETRY_STATUSES = {429, 500, 502, 503, 504}
 
-    def __init__(self, base_url: str, credentials: OAuthClientCredentials, session,
-                 max_attempts: int = 4, backoff_seconds: float = 0.5, sleep=time.sleep) -> None:
+    def __init__(self, base_url: str, credentials: OAuthClientCredentials, session: HttpSession,
+                 max_attempts: int = 4, backoff_seconds: float = 0.5,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.base_url = base_url.rstrip("/")
         self.credentials = credentials
         self.session = session
@@ -114,7 +128,7 @@ class HttpProvisioner:
         self.backoff_seconds = backoff_seconds
         self._sleep = sleep
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, **kwargs) -> HttpResponse:
         url = f"{self.base_url}{path}"
         last = None
         # Popped once: a pop inside the loop would strip the caller's headers from every retry.
@@ -171,8 +185,8 @@ class SyncOutcome:
                 "unchanged": len(self.unchanged), "failed": len(self.failed)}
 
 
-def sync_access(report: EligibilityReport, store, provisioner: Provisioner,
-                inactive: list[Worker] = ()) -> SyncOutcome:
+def sync_access(report: EligibilityReport, store: Store, provisioner: Provisioner,
+                inactive: Sequence[Worker] = ()) -> SyncOutcome:
     """Push the report's verdicts to the access system, touching only changes.
 
     Cleared workers become active. Blocked workers and inactive (rolled-off)

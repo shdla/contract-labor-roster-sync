@@ -23,6 +23,7 @@ from roster_sync import (  # noqa: E402
     file_hash, read_agency_report, read_punch_log, read_site_feed, read_roster,
     reconcile, sync_access,
 )
+from roster_sync.hours import CLEAN  # noqa: E402
 
 DB = ROOT / "demo.db"
 SAMPLES = ROOT / "samples"
@@ -128,7 +129,7 @@ def main() -> None:
                   f"agency {variance.agency:5.2f}  scanner {variance.scanner:5.2f}  "
                   f"site {variance.site if variance.site is None else f'{variance.site:5.2f}'}")
             for day in variance.days:
-                if day.reading != "clean":
+                if day.reading != CLEAN:
                     print(f"      {day.day}  {day.reading}  "
                           f"(agency {day.agency}, scanner {day.scanner}, site {day.site})")
         for item in recon.unresolved:

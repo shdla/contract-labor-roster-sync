@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,9 @@ from .models import MatchConfidence, RosterRow
 from .normalize import normalize_email, normalize_name, normalize_phone
 
 AGENCY, SCANNER, SITE = "agency", "scanner", "site"
+
+# The one reading that is not a variance. Named because it is compared, not only printed.
+CLEAN = "clean"
 
 
 @dataclass(frozen=True)
@@ -197,7 +201,7 @@ class WorkerVariance:
 
     @property
     def clean(self) -> bool:
-        return all(d.reading == "clean" for d in self.days)
+        return all(d.reading == CLEAN for d in self.days)
 
 
 @dataclass
@@ -227,12 +231,12 @@ def _classify(agency: float, scanner: float, site: float | None, tolerance: floa
 
     if site is None:
         if near(agency, scanner):
-            return "clean"
+            return CLEAN
         return "agency over-reported" if agency > scanner else "agency under-reported"
     if agency > 0 and scanner == 0 and site == 0:
         return "claimed but unrecorded"
     if near(agency, scanner) and near(scanner, site):
-        return "clean"
+        return CLEAN
     if agency > scanner and near(scanner, site):
         return "agency over-reported"
     if near(agency, scanner) and site + tolerance < scanner:
@@ -249,7 +253,7 @@ def reconcile(
     period_start: date,
     period_end: date,
     tolerance_hours: float = 0.25,
-    unresolved: list[UnresolvedRow] = (),
+    unresolved: Sequence[UnresolvedRow] = (),
 ) -> ReconciliationReport:
     """Compare sources per worker per day, then roll up to the pay period.
 

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .credentials import Credential
 from .identity import WorkerRegistry
-from .models import MatchResult, RosterRow, Worker
+from .models import MatchConfidence, MatchResult, RosterRow, Worker
 from .normalize import NormalizedName
 
 SCHEMA = """
@@ -138,7 +138,7 @@ class PendingReview:
     review_id: str
     as_of: date
     row: RosterRow
-    confidence: str
+    confidence: MatchConfidence
     note: str
     candidate_ids: list[str]
 
@@ -151,7 +151,9 @@ class PendingReview:
             if registry.get(i) is not None
         ]
         against = f" against {', '.join(names)}" if names else ""
-        return f"[{self.confidence}] {name} / {contact}{against} — {self.note}"
+        # .value is explicit: an f-string renders a str-mixin enum member as "weak_name" on
+        # Python 3.9 but as "MatchConfidence.WEAK_NAME" from 3.11.
+        return f"[{self.confidence.value}] {name} / {contact}{against} — {self.note}"
 
 
 class Store:
@@ -429,7 +431,7 @@ class Store:
                 email=row["email"],
                 role=row["role"],
             ),
-            confidence=row["confidence"],
+            confidence=MatchConfidence(row["confidence"]),
             note=row["note"] or "",
             candidate_ids=[i for i in (row["candidates"] or "").split(",") if i],
         )

@@ -27,6 +27,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
@@ -112,19 +113,31 @@ class InMemoryEventSender:
 
 # -- webhook --------------------------------------------------------------
 
+# Rate limiting and server-side failures. The same set HttpProvisioner
+# retries on, repeated here so events.py does not import provisioning.py.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+class WebhookResponse(Protocol):
+    """The part of a response this module reads."""
+
+    status_code: int
+
+
+class WebhookSession(Protocol):
+    """The part of a session this module calls; requests.Session satisfies it, and tests inject a fake."""
+
+    def post(self, url: str, **kwargs) -> WebhookResponse: ...
+
 
 class WebhookEventSender:
-    """Delivers events to a webhook (Workato's Webhooks connector trigger).
+    """Delivers events to a webhook (Workato's Webhooks connector trigger) through a WebhookSession."""
 
-    session is any object exposing .post returning something with
-    .status_code; requests.Session satisfies this, and tests inject a fake --
-    the same convention provisioning.py uses for the access API.
-    """
-
-    def __init__(self, url: str, signing_secret: str, session,
+    def __init__(self, url: str, signing_secret: str, session: WebhookSession,
                  dedup_header: str = "X-Dedup-Id",
                  signature_header: str = "X-Signature-256",
-                 max_attempts: int = 4, backoff_seconds: float = 0.5, sleep=time.sleep) -> None:
+                 max_attempts: int = 4, backoff_seconds: float = 0.5,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.url = url
         self.signing_secret = signing_secret.encode("utf-8")
         self.session = session
@@ -149,7 +162,7 @@ class WebhookEventSender:
         last = None
         for attempt in range(1, self.max_attempts + 1):
             response = self.session.post(self.url, data=body, headers=headers, timeout=15)
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < self.max_attempts:
+            if response.status_code in RETRY_STATUSES and attempt < self.max_attempts:
                 delay = self.backoff_seconds * (2 ** (attempt - 1))
                 log.warning("webhook post -> %s; retry %d in %.1fs", response.status_code, attempt, delay)
                 self._sleep(delay)
