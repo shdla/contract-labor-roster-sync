@@ -170,8 +170,8 @@ table in `ingest.py` (`DEFAULT_HEADER_ALIASES`), overridable per call through
 raised. `read_roster` lists each one in `IngestReport.unmapped_roles` as the
 spreadsheet row and the text the agency wrote; the text is reported for that
 run and never stored. On a roster row that is applied, a role cell the map
-cannot read sets the worker's role to `None` and records the change, for a
-known worker as for a new one, so the gate blocks with `role not mapped`
+cannot read sets the worker's role to `None`, new worker or known, and
+records the change for a known one, so the gate blocks with `role not mapped`
 whatever credentials the old role had earned. An empty role cell, or a
 placeholder such as `n/a`, leaves the role unchanged. The operational
 consequence is deliberate: when the agency changes how it spells a role,
