@@ -143,6 +143,12 @@ def test_http_provisioner_refreshes_the_token_once_on_401(populated):
     assert grants[1][2]["headers"].get("Idempotency-Key") == ruiz.worker_id
 
 
+def test_oauth_credentials_keep_the_secret_out_of_repr_and_the_cache_out_of_init():
+    assert "SUPERSECRET" not in repr(OAuthClientCredentials("https://a/token", "id", "SUPERSECRET"))
+    with pytest.raises(TypeError):
+        OAuthClientCredentials("https://a/token", "id", "s", _token="preset")
+
+
 def test_http_provisioner_gives_up_after_max_attempts(populated):
     _, _, ruiz, _ = populated
     session = FakeSession([FakeResponse(503)] * 4)

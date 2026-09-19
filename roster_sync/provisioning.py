@@ -69,11 +69,16 @@ class InMemoryProvisioner:
 class OAuthClientCredentials:
     token_url: str
     client_id: str
-    client_secret: str
+    client_secret: str = field(repr=False)  # a repr ends up in logs and tracebacks
     scope: str = ""
     refresh_margin_seconds: int = 60
-    _token: str | None = field(default=None, repr=False)
-    _expires_at: float = 0.0
+    # Cache state, not configuration: kept out of the constructor and the repr.
+    _token: str | None = field(default=None, init=False, repr=False)
+    _expires_at: float = field(default=0.0, init=False, repr=False)
+
+    def invalidate(self) -> None:
+        """Drop the cached token so the next token() call fetches a new one."""
+        self._token = None
 
     def token(self, session) -> str:
         if self._token and time.time() < self._expires_at - self.refresh_margin_seconds:
@@ -120,7 +125,7 @@ class HttpProvisioner:
             headers = {"Authorization": f"Bearer {self.credentials.token(self.session)}", **extra}
             response = getattr(self.session, method)(url, headers=headers, timeout=15, **kwargs)
             if response.status_code == 401 and attempt == 1:
-                self.credentials._token = None  # force refresh once, then treat as failure
+                self.credentials.invalidate()  # force refresh once, then treat as failure
                 continue
             if response.status_code in self.RETRY_STATUSES and attempt < self.max_attempts:
                 delay = self.backoff_seconds * (2 ** (attempt - 1))
