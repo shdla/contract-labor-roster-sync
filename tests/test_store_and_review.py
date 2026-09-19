@@ -144,10 +144,11 @@ def test_saving_the_same_flag_twice_does_not_duplicate_it(store):
     ambiguous = row("Curtis", "Delaney", "832.555.0999", "different@example.com")
     diff = compute_diff(registry, [ambiguous], WEEK_2)
 
-    store.save_reviews(diff.review, WEEK_2)
-    store.save_reviews(diff.review, WEEK_2)
+    created = store.save_reviews(diff.review, WEEK_2)
+    assert store.save_reviews(diff.review, WEEK_2) == [], "the second call creates nothing"
 
-    assert len(store.open_reviews()) == 1
+    assert len(created) == 1
+    assert [r.review_id for r in store.open_reviews()] == created
 
 
 def test_confirming_merges_identifiers_so_the_flag_never_returns(store):

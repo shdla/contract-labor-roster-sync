@@ -247,18 +247,13 @@ class Store:
     def record_period(self, as_of: date, source_path: str | None = None,
                       digest: str | None = None) -> bool:
         """Record a processed roster period. False if it was already recorded."""
-        existing = self._connection.execute(
-            "SELECT file_hash FROM roster_periods WHERE as_of = ?", (as_of.isoformat(),)
-        ).fetchone()
-        if existing is not None:
-            return False
         with self._connection:
-            self._connection.execute(
+            cursor = self._connection.execute(
                 "INSERT INTO roster_periods (as_of, file_hash, source_path, processed_at)"
-                " VALUES (?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?) ON CONFLICT(as_of) DO NOTHING",
                 (as_of.isoformat(), digest, source_path, _now()),
             )
-        return True
+        return cursor.rowcount == 1
 
     def period_hash(self, as_of: date) -> str | None:
         row = self._connection.execute(
@@ -269,7 +264,7 @@ class Store:
     # -- review queue -----------------------------------------------------
 
     def save_reviews(self, results: list[MatchResult], as_of: date) -> list[str]:
-        """Persist flagged rows. Re-flagging the same row does not duplicate it."""
+        """Persist flagged rows and return the ids created. Re-flagging the same row does not duplicate it."""
         created: list[str] = []
         with self._connection:
             for result in results:
@@ -283,17 +278,13 @@ class Store:
                     ]
                 )
                 review_id = str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint))
-                exists = self._connection.execute(
-                    "SELECT 1 FROM pending_reviews WHERE review_id = ?", (review_id,)
-                ).fetchone()
-                if exists:
-                    continue
-                self._connection.execute(
+                cursor = self._connection.execute(
                     """
                     INSERT INTO pending_reviews
                         (review_id, as_of, source_row, first_name, last_name, phone,
                          email, role, confidence, note, candidates, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(review_id) DO NOTHING
                     """,
                     (
                         review_id,
@@ -310,7 +301,8 @@ class Store:
                         _now(),
                     ),
                 )
-                created.append(review_id)
+                if cursor.rowcount == 1:
+                    created.append(review_id)
         return created
 
     def open_reviews(self) -> list[PendingReview]:
