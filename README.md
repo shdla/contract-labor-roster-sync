@@ -209,6 +209,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
+docs/screenshots/    the companion Workato recipe: canvas, jobs, lookup tables
 tests/               198 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
@@ -394,3 +395,49 @@ compact separators.
   A transport error (timeout, connection reset) is retried the same way: the
   post may have arrived before the connection dropped, which is the same
   reason to deduplicate.
+
+## The Workato half
+
+Recipe 1 receives `worker.joined` and owns the people side: it picks the
+next orientation session with capacity, looks up what the role requires,
+books the seat and notifies the worker.
+
+- **Guard.** Step 2 stops any event whose `type` is not `worker.joined`.
+- **Dedup.** Delivery from this repository is at-least-once and the Workato
+  webhook gateway does not deduplicate, so the recipe does. Steps 3 to 6
+  search a `processed_events` lookup table for the `event_id` (the same
+  value as `X-Dedup-Id`), stop the job on a hit, and otherwise write the id
+  before any side effect. The check and the write are separate steps. That
+  is safe at the recipe's concurrency of 1, the Workato default, where jobs
+  run one at a time; a higher setting would need an atomic claim.
+- **Booking.** Steps 8 to 10 take the first `orientation_sessions` row whose
+  `status` is `open`, read `role_requirements` for the role, and increment
+  `booked`, setting `status` to `full` at capacity. The `status` column
+  exists because lookup-table search is exact-match only, so "capacity
+  remaining" cannot be a search condition. Search returns rows in insertion
+  order, so sessions are inserted chronologically.
+- **Failure.** An error monitor wraps the booking block. On error it does
+  not retry, because the booking update is not idempotent, and it emails a
+  person. The id is already in the ledger by then, so a resend of that event
+  is discarded: a failed booking is finished by a person, never booked
+  twice. Workato lists a job whose error was handled as Successful; the
+  failed step is visible inside the job.
+- **Not built.** The recipe does not yet verify `X-Signature-256`. Email
+  stands in for SMS, which is the real channel for this population; the
+  delivery step is isolated so it can be swapped. Reminders, escalation and
+  the supervisor digest belong to this half and are not built.
+
+| | |
+|---|---|
+| ![Recipe canvas](docs/screenshots/02-recipe-canvas.png) | ![Job history](docs/screenshots/03-job-history.png) |
+| The recipe: type guard, dedup ledger, monitored booking block, error branch | Job history, including the identical event sent twice |
+| ![Duplicate stopped](docs/screenshots/05-dedup-stopped-job.png) | ![Error monitor](docs/screenshots/07-error-monitor.png) |
+| Second delivery of the same event: ledger hit, job stops at step 5 in 81 ms | Forced failure (no open session): caught at step 10, a person alerted, not retried |
+
+Also: [the recipe in its project](docs/screenshots/01-project-recipe.png),
+[a full run with the rendered notification](docs/screenshots/04-successful-job.png),
+and the lookup tables:
+[orientation sessions](docs/screenshots/08-orientation-sessions.png),
+[role requirements](docs/screenshots/09-role-requirements.png),
+[processed events ledger](docs/screenshots/06-processed-events.png).
+Send a signed test event with `samples/send_test_event.py`.
