@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from roster_sync.ingest import DEFAULT_HEADER_ALIASES, find_header_row, read_roster
 
@@ -121,3 +121,49 @@ def test_custom_header_aliases_replace_the_defaults(tmp_path):
     rows, report = read_roster(path, ROLE_MAP, header_aliases=aliases)
     assert report.column_map == {"first_name": 0, "last_name": 1, "phone": 2}
     assert rows[0].is_usable and rows[0].phone == "+18325550142"
+
+
+# -- a header the aliases cannot read -------------------------------------
+
+RENAMED_NAME_HEADERS = [
+    ["Employee First Name", "Employee Last Name", "Phone", "Email", "Role"],
+    ["Marcus", "Webb", "(832) 555-0142", "mwebb@example.com", "Material Handler"],
+]
+
+
+def test_unrecognized_name_headers_raise_and_the_message_names_them(tmp_path):
+    """Phone, email and role alone used to pass: every row rejected, the period still recorded."""
+    path = write_workbook(tmp_path / "roster.xlsx", RENAMED_NAME_HEADERS)
+    with pytest.raises(ValueError) as raised:
+        read_roster(path, ROLE_MAP)
+    message = str(raised.value)
+    assert "first_name" in message and "last_name" in message
+    assert "Employee First Name" in message and "Employee Last Name" in message
+
+
+def test_no_recognized_contact_header_raises(tmp_path):
+    """Without a phone or an email column no row can ever be usable."""
+    path = write_workbook(tmp_path / "roster.xlsx", [
+        ["First Name", "Last Name", "Phone #", "E-Mail Address", "Role"],
+        ["Marcus", "Webb", "(832) 555-0142", "mwebb@example.com", "Material Handler"],
+    ])
+    with pytest.raises(ValueError, match="phone or email") as raised:
+        read_roster(path, ROLE_MAP)
+    assert "Phone #" in str(raised.value) and "E-Mail Address" in str(raised.value)
+
+
+@pytest.mark.parametrize("grid", [RENAMED_NAME_HEADERS, [["Placement Roster"]]], ids=["missing-column", "no-header"])
+def test_a_refused_file_is_closed_before_the_raise(tmp_path, monkeypatch, grid):
+    path = write_workbook(tmp_path / "roster.xlsx", grid)
+    closed = []
+
+    def spy(*args, **kwargs):
+        workbook = load_workbook(*args, **kwargs)
+        real_close = workbook.close
+        monkeypatch.setattr(workbook, "close", lambda: (closed.append(True), real_close()))
+        return workbook
+
+    monkeypatch.setattr("roster_sync.ingest.load_workbook", spy)
+    with pytest.raises(ValueError):
+        read_roster(path, ROLE_MAP)
+    assert closed == [True]

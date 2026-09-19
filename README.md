@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 142 tests
+idempotent sync · three-way data reconciliation · 146 tests
 
 ## Scenario
 
@@ -163,7 +163,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               142 tests covering normalization, matching, diffing,
+tests/               146 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -176,7 +176,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 142 tests
+python -m pytest tests/ -q            # 146 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
@@ -271,6 +271,12 @@ rows, trailing notes below the data, phone numbers stored as text in three
 formats and as a float by Excel, extensions appended to numbers, missing
 emails, generational suffixes appearing intermittently, middle names
 appearing intermittently, and `Last, First` collapsed into one cell.
+
+What it refuses, on purpose, is a header row with no recognized first-name or
+last-name column, or with neither a phone nor an email column. `read_roster`
+raises and names the header cells it found. Parsed anyway, such a file would
+reject every row and still count as a processed period, and the second such
+week would turn every active worker into a leaver.
 
 ## Scope boundary
 
