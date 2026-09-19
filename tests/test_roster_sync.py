@@ -361,3 +361,18 @@ def test_same_row_twice_in_one_file_is_applied_and_not_flagged():
     assert diff.summary()["review"] == 0
     assert diff.summary()["unchanged"] == 1
     assert len(registry.workers) == 1
+
+
+def test_same_row_twice_in_one_file_lists_the_joiner_once():
+    registry = WorkerRegistry()
+    twice = [
+        row("Maria", "Lopez", "832-555-0111"),
+        row("Maria", "Lopez", "832-555-0111", source_row=3),
+    ]
+    first = compute_diff(registry, twice, WEEK_1)
+    rerun = compute_diff(registry, twice, WEEK_1)
+
+    # The second row is a strong match on a worker first seen this period,
+    # which is exactly the derived-joiner condition.
+    assert len(first.joiners) == 1
+    assert rerun.joiners == first.joiners

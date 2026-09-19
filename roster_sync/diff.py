@@ -12,6 +12,11 @@ a counter incremented per run. That distinction matters operationally: a
 counter ages every absent worker again each time the same file is
 reprocessed, so a retried job could deactivate badges for people still on
 site. Deriving it makes a rerun a no-op.
+
+Joiner status is derived the same way: a worker whose first_seen is the
+period being processed is a joiner of that period, on the first run and on
+every rerun. A rerun is the only way to resend a worker.joined event whose
+delivery failed, and it can only do that if it lists the same joiners.
 """
 
 from __future__ import annotations
@@ -87,6 +92,13 @@ def compute_diff(
 
         changes = registry.apply(result, as_of)
         seen_ids.add(result.worker.worker_id)
+        # Joiner status is derived from first_seen, not from the NEW branch
+        # alone, so a rerun of this period lists the same joiners and
+        # events.py re-emits the same ids. The worker is then in joiners and
+        # also in changed or unchanged. The membership check keeps a row
+        # listed twice in one file from listing its worker twice.
+        if result.worker.first_seen == as_of and result.worker not in diff.joiners:
+            diff.joiners.append(result.worker)
         if changes:
             diff.changed.append((result.worker, changes))
         else:

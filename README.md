@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 137 tests
+idempotent sync · three-way data reconciliation · 142 tests
 
 ## Scenario
 
@@ -163,7 +163,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               137 tests covering normalization, matching, diffing,
+tests/               142 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -176,7 +176,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 137 tests
+python -m pytest tests/ -q            # 142 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
@@ -286,10 +286,17 @@ problems rather than something to hand-roll.
 becomes a `worker.joined` webhook delivery: HMAC-SHA256-signed, and carrying
 a dedup id that is a UUIDv5 of `(event type, worker id, roster period)`
 rather than a random value. A retry can double-send, so delivery is
-at-least-once within a run, and every retry carries the same id instead of
-minting a new one. A rerun of an already-processed period does not re-emit
-today: it reports no joiners, so an event that exhausted its retries is
-listed in `EmitOutcome.failed` and is not sent again. The receiving recipe
+at-least-once, and every retry carries the same id instead of minting a new
+one. That holds across runs as well as within one. Joiner status is derived
+from `first_seen` being the roster period, the way absence is derived from
+the periods processed, so a rerun of an already-processed period lists the
+same joiners and re-emits the same ids. The rerun is the resend path:
+`EmitOutcome.failed` is reported and not persisted, so an event that
+exhausted its retries goes out again when the period is run again, along
+with the ones already delivered, which the receiver discards by id. A worker
+created by rejecting a review flag is created outside any diff, so the
+caller of `reject()` emits `worker_joined_event` for the flag's period, and
+a rerun of that period derives the same id. The receiving recipe
 reacts to that id being new or repeated; nothing about *how* it reacts
 (which lookup table, what the notification says, where the error monitor
 wraps) is decided in Python. That split is deliberate: an agency roster is

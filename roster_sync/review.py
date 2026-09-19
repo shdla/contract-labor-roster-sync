@@ -32,6 +32,15 @@ from .store import PendingReview, Store
 
 @dataclass
 class Resolution:
+    """What a decision did, returned to the caller.
+
+    After a reject the caller emits worker_joined_event(resolution.worker,
+    review.as_of): the worker is created here, never in compute_diff's NEW
+    branch, so no diff of that run lists the joiner. first_seen is
+    review.as_of, so a rerun of that period derives the same joiner and the
+    same event id, and the receiver deduplicates.
+    """
+
     decision: str
     worker: Worker
     changes: list[str]

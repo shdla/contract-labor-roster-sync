@@ -5,12 +5,16 @@ from datetime import date
 
 import pytest
 
+from roster_sync.diff import compute_diff
 from roster_sync.events import (
     DeliveryError, InMemoryEventSender, WebhookEventSender, emit_diff, event_id,
     events_for_diff, worker_joined_event,
 )
-from roster_sync.models import RosterDiff, Worker
-from roster_sync.normalize import normalize_name
+from roster_sync.identity import WorkerRegistry
+from roster_sync.models import RosterDiff, RosterRow, Worker
+from roster_sync.normalize import normalize_name, normalize_phone
+from roster_sync.review import reject
+from roster_sync.store import Store
 
 D1, D2 = date(2024, 7, 15), date(2024, 7, 16)
 
@@ -75,6 +79,52 @@ def test_events_for_diff_only_emits_joiners():
     events = events_for_diff(diff)
     assert [e.subject for e in events] == [joiner.worker_id]
     assert events[0].type == "worker.joined"
+
+
+# -- reruns ------------------------------------------------------------------
+
+
+def roster_row(first, last, phone, source_row=2):
+    return RosterRow(source_row=source_row, name=normalize_name(first, last),
+                     phone=normalize_phone(phone), email=None, role="material_handler")
+
+
+def test_rerun_of_a_period_re_emits_the_same_event_ids():
+    registry = WorkerRegistry()
+    rows = [roster_row("Tomas", "Ruiz", "8325550214"),
+            roster_row("Alicia", "Fontenot", "8325550288", source_row=3)]
+
+    first = compute_diff(registry, rows, D1)
+    rerun = compute_diff(registry, rows, D1)
+
+    # EmitOutcome.failed is persisted nowhere, so a rerun is the only resend
+    # path, and the receiver can only deduplicate it if the ids repeat.
+    assert rerun.is_rerun is True
+    sent = [e.id for e in events_for_diff(first)]
+    assert len(sent) == 2
+    assert [e.id for e in events_for_diff(rerun)] == sent
+
+
+def test_worker_created_by_reject_gets_the_event_id_a_rerun_of_that_period_derives(tmp_path):
+    path = tmp_path / "roster.db"
+    other = roster_row("Chris", "Nguyen", "8325550202")
+
+    with Store(path) as store:
+        registry = store.load_registry()
+        compute_diff(registry, [roster_row("Chris", "Nguyen", "8325550101")], D1)
+
+        flagged = compute_diff(registry, [other], D2)
+        assert events_for_diff(flagged) == [], "a flagged row is nobody's joiner yet"
+        (review_id,) = store.save_reviews(flagged.review, D2)
+
+        # The caller's emission after a reject, as the Resolution docstring states it.
+        resolution = reject(store, registry, review_id, decided_by="a.diaz")
+        emitted = worker_joined_event(resolution.worker, store.get_review(review_id).as_of)
+
+    # The period is run again in a fresh process; first_seen comes back from the database.
+    with Store(path) as later:
+        rerun = compute_diff(later.load_registry(), [other], D2)
+        assert [e.id for e in events_for_diff(rerun)] == [emitted.id]
 
 
 # -- in-memory sender ---------------------------------------------------
