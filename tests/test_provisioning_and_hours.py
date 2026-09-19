@@ -314,6 +314,22 @@ def test_agency_row_matching_on_name_alone_is_given_no_hours(tmp_path, populated
     assert [(u.line, u.reason) for u in unresolved] == [(2, "identity weak_name")]
 
 
+def test_short_agency_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path, populated):
+    _, registry, ruiz, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-15,8\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-16\n"
+        "Tomas,Ruiz,(832) 555-0214,tr@example.com,2024-07-17,8.5\n"
+    )
+    # csv.DictReader hands a truncated line None for the missing cells; one such line must not abort the file.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert [(r.worker_id, r.day, r.hours) for r in records] == [(ruiz.worker_id, D1, 8.0), (ruiz.worker_id, D3, 8.5)]
+    assert [(u.source, u.line) for u in unresolved] == [(AGENCY, 3)]
+    assert "float" in unresolved[0].reason
+
+
 def test_punch_log_computes_hours_and_flags_missing_out(tmp_path):
     p = tmp_path / "scan.csv"
     p.write_text("worker_id,date,in,out\nw,2024-07-15,06:00,14:30\nw,2024-07-16,06:00,\nw,2024-07-17,22:00,06:00\n")
@@ -321,6 +337,17 @@ def test_punch_log_computes_hours_and_flags_missing_out(tmp_path):
     assert [r.hours for r in records] == [8.5, 0.0, 8.0]
     assert records[1].note == "missing out-punch"
     assert unresolved == []
+
+
+def test_short_punch_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path):
+    p = tmp_path / "scan.csv"
+    p.write_text("worker_id,date,in,out\nw,2024-07-15,06:00,14:30\nw\nw,2024-07-16,06:00\nw,2024-07-17,06:00,14:00\n")
+    records, unresolved = read_punch_log(p, SCANNER)
+    # A line cut before the date cannot be placed on a day; a line cut before "out" is an empty out cell.
+    assert [(r.day, r.hours, r.note) for r in records] == [
+        (D1, 8.5, ""), (D2, 0.0, "missing out-punch"), (D3, 8.0, "")]
+    assert [(u.source, u.line) for u in unresolved] == [(SCANNER, 3)]
+    assert "date" in unresolved[0].reason
 
 
 def test_overnight_shift_on_the_last_day_of_a_month(tmp_path):

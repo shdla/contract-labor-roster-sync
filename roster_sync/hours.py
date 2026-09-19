@@ -99,6 +99,8 @@ def read_agency_report(path: str | Path, registry: WorkerRegistry, role_map: dic
         reader = csv.DictReader(handle)
         reader.fieldnames = [f.strip().lower() for f in reader.fieldnames or []]
         for line, raw in enumerate(reader, start=2):
+            # DictReader fills a short row with None; as empty cells it fails parsing below, not the whole file.
+            raw = {k: v or "" for k, v in raw.items()}
             row = RosterRow(
                 source_row=line,
                 name=normalize_name(raw.get("first name"), raw.get("last name")),
@@ -135,6 +137,8 @@ def read_punch_log(path: str | Path, source: str, id_column: str = "worker_id"
         reader = csv.DictReader(handle)
         reader.fieldnames = [f.strip().lower() for f in reader.fieldnames or []]
         for line, raw in enumerate(reader, start=2):
+            # Short rows arrive as None, read as empty cells; a row cut before "out" is a missing out-punch.
+            raw = {k: v or "" for k, v in raw.items()}
             try:
                 day = _parse_date(raw["date"])
                 worker_id = raw[id_column].strip()
