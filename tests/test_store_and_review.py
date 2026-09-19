@@ -13,6 +13,7 @@ from roster_sync.store import Store, file_hash
 WEEK_1 = date(2024, 7, 8)
 WEEK_2 = date(2024, 7, 15)
 WEEK_3 = date(2024, 7, 22)
+WEEK_4 = date(2024, 7, 29)
 
 
 def row(first, last, phone=None, email=None, role="material_handler", source_row=2):
@@ -282,6 +283,21 @@ def test_confirming_a_stale_flag_whose_duplicate_was_rejected_is_refused(store):
     with pytest.raises(ReviewResolutionError):
         confirm(store, registry, week3_flag, curtis.worker_id, decided_by="a.diaz")
     assert "+18325550999" not in curtis.phones
+
+
+def test_confirming_an_older_flag_last_does_not_move_last_seen_backwards(store):
+    registry, (week2_flag, week3_flag) = flag_the_same_row_in_two_weeks(store)
+    curtis = registry.workers[0]
+
+    # The queue is cleared newest first. Each confirm dates its sighting to its own period.
+    confirm(store, registry, week3_flag, curtis.worker_id, decided_by="a.diaz")
+    confirm(store, registry, week2_flag, curtis.worker_id, decided_by="a.diaz")
+    assert curtis.last_seen == WEEK_3
+
+    # His first real absence. Counted from week 2 it would look like his second.
+    fourth = compute_diff(registry, [], WEEK_4)
+    assert fourth.summary()["leavers"] == 0, "one missing file must not deactivate a badge"
+    assert curtis.active is True
 
 
 def test_resolving_an_unknown_review_is_refused(store):

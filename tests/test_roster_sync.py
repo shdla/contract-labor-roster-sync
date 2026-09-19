@@ -22,6 +22,7 @@ ROLE_MAP = {
 WEEK_1 = date(2024, 7, 8)
 WEEK_2 = date(2024, 7, 15)
 WEEK_3 = date(2024, 7, 22)
+WEEK_4 = date(2024, 7, 29)
 
 
 # -- normalization --------------------------------------------------------
@@ -242,6 +243,24 @@ def test_single_absence_does_not_deactivate_but_two_do():
     third = compute_diff(registry, [present], WEEK_3)
     assert third.summary()["leavers"] == 1
     assert third.leavers[0].name.last == "villanueva"
+
+
+def test_backfilled_older_file_does_not_move_last_seen_backwards():
+    registry = WorkerRegistry()
+    present = row("Tomas", "Ruiz", "8325550214", "truiz@example.com")
+    ray = row("Ray", "Villanueva", "832.555.0193", "ray@example.com")
+
+    first = compute_diff(registry, [present, ray], WEEK_1)
+    villanueva = next(w for w in first.joiners if w.name.last == "villanueva")
+    compute_diff(registry, [present, ray], WEEK_3)
+    # Week 2 arrives late. Ray is on it, as he was on every file so far.
+    compute_diff(registry, [present, ray], WEEK_2)
+    assert villanueva.last_seen == WEEK_3
+
+    # His first real absence. Counted from week 2 it would look like his second.
+    fourth = compute_diff(registry, [present], WEEK_4)
+    assert fourth.summary()["leavers"] == 0, "one missing file must not deactivate a badge"
+    assert villanueva.active is True
 
 
 def test_returning_worker_reactivates_under_the_same_id():

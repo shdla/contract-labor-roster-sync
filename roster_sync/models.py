@@ -85,7 +85,9 @@ class Worker:
 
         if self.first_seen is None:
             self.first_seen = seen_on
-        self.last_seen = seen_on
+        # Never backwards: a backfilled older file, or an older flag confirmed
+        # late, would otherwise turn the next single absence into a leaver.
+        self.last_seen = max(self.last_seen or seen_on, seen_on)
         return changes
 
 
