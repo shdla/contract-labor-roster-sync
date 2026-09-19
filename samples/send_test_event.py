@@ -54,12 +54,7 @@ def main() -> None:
     event = worker_joined_event(worker, date.fromisoformat(args.period))
 
     sender = WebhookEventSender(args.url or "", args.secret, session=None)
-    body = event.body()
-    headers = {
-        "Content-Type": "application/json",
-        sender.dedup_header: event.id,
-        sender.signature_header: sender._signature(body),
-    }
+    body, headers = sender.signed_request(event)
 
     print("dedup id  :", event.id)
     print("signature :", headers[sender.signature_header])

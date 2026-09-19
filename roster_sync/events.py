@@ -136,16 +136,18 @@ class WebhookEventSender:
         self.backoff_seconds = backoff_seconds
         self._sleep = sleep
 
-    def _signature(self, body: bytes) -> str:
-        return hmac.new(self.signing_secret, body, hashlib.sha256).hexdigest()
-
-    def send(self, event: Event) -> None:
+    def signed_request(self, event: Event) -> tuple[bytes, dict[str, str]]:
+        """Body and headers together, so the signature is over the exact bytes posted."""
         body = event.body()
         headers = {
             "Content-Type": "application/json",
             self.dedup_header: event.id,
-            self.signature_header: self._signature(body),
+            self.signature_header: hmac.new(self.signing_secret, body, hashlib.sha256).hexdigest(),
         }
+        return body, headers
+
+    def send(self, event: Event) -> None:
+        body, headers = self.signed_request(event)
         last = None
         for attempt in range(1, self.max_attempts + 1):
             response = self.session.post(self.url, data=body, headers=headers, timeout=15)
