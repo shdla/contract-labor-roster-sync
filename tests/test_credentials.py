@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -43,6 +44,18 @@ def test_credential_without_expiry_never_expires():
     assert cred("ppe_issued").status_on(date(2030, 1, 1), 14) is CredentialStatus.VALID
 
 
+def test_status_boundaries_include_the_expiry_date_and_the_first_warning_day():
+    expires = TODAY + timedelta(days=60)
+    c = cred("forklift_certification", expires=expires)
+
+    # A certificate is valid through its expiry date and lapses the day after.
+    assert c.status_on(expires, warn_days=14) is CredentialStatus.EXPIRING
+    assert c.status_on(expires + timedelta(days=1), warn_days=14) is CredentialStatus.EXPIRED
+    # The warning starts exactly warn_days before expiry, not a day later.
+    assert c.status_on(expires - timedelta(days=14), warn_days=14) is CredentialStatus.EXPIRING
+    assert c.status_on(expires - timedelta(days=15), warn_days=14) is CredentialStatus.VALID
+
+
 # -- gate -----------------------------------------------------------------
 
 
@@ -83,12 +96,15 @@ def test_expiring_certification_clears_with_a_warning():
     assert [f.kind for f in v.warnings] == ["forklift_certification"]
 
 
-def test_renewal_supersedes_the_lapsed_certificate():
-    held = [
-        cred("safety_orientation"), cred("ppe_issued"),
-        cred("forklift_certification", granted=TODAY - timedelta(days=400), expires=TODAY - timedelta(days=35)),
-        cred("forklift_certification", granted=TODAY - timedelta(days=30), expires=TODAY + timedelta(days=335)),
-    ]
+LAPSED = cred("forklift_certification", granted=TODAY - timedelta(days=400), expires=TODAY - timedelta(days=35))
+RENEWED = cred("forklift_certification", granted=TODAY - timedelta(days=30), expires=TODAY + timedelta(days=335))
+
+
+# Both orders: the gate must pick the latest expiry, not the last record read.
+@pytest.mark.parametrize("certificates", [[LAPSED, RENEWED], [RENEWED, LAPSED]],
+                         ids=["lapsed_first", "renewed_first"])
+def test_renewal_supersedes_the_lapsed_certificate(certificates):
+    held = [cred("safety_orientation"), cred("ppe_issued")] + certificates
     v = evaluate(worker("forklift_operator"), held, REQUIREMENTS, TODAY)
     assert v.cleared, "the newer certificate must win over the expired one"
 
@@ -149,6 +165,26 @@ def test_credentials_persist_and_attach_to_the_right_worker(tmp_path):
         report = build_report(registry.workers, store.all_credentials(), REQUIREMENTS, TODAY)
         assert report.summary()["cleared"] == 1
         assert len(store.credentials_for(wid)) == 3
+
+
+def test_renewal_is_appended_and_the_lapsed_record_is_kept(tmp_path):
+    with Store(tmp_path / "roster.db") as store:
+        registry = store.load_registry()
+        row = RosterRow(2, normalize_name("Tomas", "Ruiz"), normalize_phone("8325550214"),
+                        normalize_email("tr@example.com"), "forklift_operator")
+        compute_diff(registry, [row], TODAY)
+        store.save_registry(registry)
+        wid = registry.workers[0].worker_id
+
+        store.grant_credential(cred("safety_orientation", wid))
+        store.grant_credential(cred("ppe_issued", wid))
+        store.grant_credential(replace(LAPSED, worker_id=wid))
+        store.grant_credential(replace(RENEWED, worker_id=wid))
+
+        certificates = [c for c in store.credentials_for(wid) if c.kind == "forklift_certification"]
+        assert [c.expires_on for c in certificates] == [LAPSED.expires_on, RENEWED.expires_on]
+        report = build_report(registry.workers, store.all_credentials(), REQUIREMENTS, TODAY)
+        assert report.summary()["cleared"] == 1
 
 
 def test_granting_to_an_unknown_worker_is_refused(tmp_path):

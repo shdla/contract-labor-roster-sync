@@ -1,3 +1,4 @@
+import uuid
 from datetime import date
 
 import pytest
@@ -101,6 +102,17 @@ def test_first_sighting_is_new_and_gets_an_id():
     assert worker.role == "material_handler"
 
 
+def test_worker_id_is_issued_not_derived_from_the_row():
+    same = row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com")
+    first = WorkerRegistry().create(same, WEEK_1)
+    second = WorkerRegistry().create(same, WEEK_1)
+
+    # An id derived from name, phone or email would be equal here, and would
+    # change the day any of them changed.
+    assert first.worker_id != second.worker_id
+    assert uuid.UUID(first.worker_id).version == 4
+
+
 def test_name_typo_still_matches_on_phone():
     registry = WorkerRegistry()
     registry.create(row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com"), WEEK_1)
@@ -150,6 +162,18 @@ def test_reassigned_phone_pointing_at_another_name_escalates():
     # Fontenot's old number reissued to Villanueva by the carrier.
     result = registry.match(row("Ray", "Villanueva", "832.555.0288"))
     assert result.confidence is MatchConfidence.CONFLICT
+
+
+def test_phone_and_email_pointing_at_different_workers_escalate():
+    registry = WorkerRegistry()
+    ray = registry.create(row("Ray", "Villanueva", "832.555.0193", "ray@example.com"), WEEK_1)
+    alicia = registry.create(row("Alicia", "Fontenot", "832.555.0288", "af@example.com"), WEEK_1)
+
+    # Ray's phone with Alicia's email. Neither signal outranks the other.
+    result = registry.match(row("Ray", "Villanueva", "832.555.0193", "af@example.com"))
+    assert result.confidence is MatchConfidence.CONFLICT
+    assert result.worker is None
+    assert result.candidates == [ray, alicia]
 
 
 def test_row_without_any_contact_identifier_is_rejected():
@@ -240,3 +264,26 @@ def test_uncertain_rows_go_to_review_and_provision_nothing():
     assert second.summary()["review"] == 1
     assert second.summary()["joiners"] == 0
     assert len(registry.workers) == 1
+
+
+def test_conflicting_strong_signals_go_to_review_and_change_neither_worker():
+    registry = WorkerRegistry()
+    first = compute_diff(
+        registry,
+        [
+            row("Ray", "Villanueva", "832.555.0193", "ray@example.com"),
+            row("Alicia", "Fontenot", "832.555.0288", "af@example.com"),
+        ],
+        WEEK_1,
+    )
+    ray, alicia = first.joiners
+
+    # Resolving by precedence would apply this row to Ray and hand him
+    # Alicia's email.
+    mixed = row("Ray", "Villanueva", "832.555.0193", "af@example.com")
+    second = compute_diff(registry, [mixed], WEEK_2)
+
+    assert second.summary()["review"] == 1
+    assert second.summary()["changed"] == 0
+    assert (ray.phones, ray.emails) == ({"+18325550193"}, {"ray@example.com"})
+    assert (alicia.phones, alicia.emails) == ({"+18325550288"}, {"af@example.com"})

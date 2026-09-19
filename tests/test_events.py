@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from datetime import date
 
@@ -132,7 +134,9 @@ def test_webhook_sender_signs_body_and_sets_dedup_header():
     assert url == "https://hooks.example/worker_joined"
     assert kwargs["data"] == event.body()
     assert kwargs["headers"]["X-Dedup-Id"] == event.id
-    assert len(kwargs["headers"]["X-Signature-256"]) == 64, "hex-encoded sha256 digest"
+    # Recomputed over the bytes actually posted, with the shared secret.
+    expected = hmac.new(b"s3cret", kwargs["data"], hashlib.sha256).hexdigest()
+    assert kwargs["headers"]["X-Signature-256"] == expected
 
 
 def test_webhook_sender_same_event_twice_produces_same_dedup_header():

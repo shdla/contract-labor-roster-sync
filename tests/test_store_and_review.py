@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 
 from roster_sync.diff import compute_diff
+from roster_sync.identity import WorkerRegistry
 from roster_sync.models import RosterRow
 from roster_sync.normalize import normalize_email, normalize_name, normalize_phone
 from roster_sync.review import ReviewResolutionError, confirm, reject
@@ -218,3 +219,20 @@ def test_unresolved_flag_does_not_age_a_worker_into_a_false_leaver(store):
 
     assert third.summary()["leavers"] == 0, "a pending flag must not deactivate a badge"
     assert registry.workers[0].active is True
+
+
+def test_flag_naming_only_candidates_does_not_age_either_of_them():
+    registry = WorkerRegistry()
+    compute_diff(registry, [row("Chris", "Nguyen", "832.555.0101", "cn1@example.com")], WEEK_1)
+    # Created directly: compute_diff would flag a second Chris Nguyen as
+    # WEAK_NAME rather than create him.
+    registry.create(row("Chris", "Nguyen", "832.555.0102", "cn2@example.com"), WEEK_1)
+
+    # The name matches both, so the flag carries two candidates and no worker.
+    ambiguous = row("Chris", "Nguyen", "832.555.0999")
+    compute_diff(registry, [ambiguous], WEEK_2)
+    third = compute_diff(registry, [ambiguous], WEEK_3)
+
+    assert third.review[0].worker is None
+    assert third.summary()["leavers"] == 0, "either candidate may be the person on site"
+    assert all(w.active for w in registry.workers)
