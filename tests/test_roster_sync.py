@@ -327,3 +327,37 @@ def test_conflicting_strong_signals_go_to_review_and_change_neither_worker():
     assert second.summary()["changed"] == 0
     assert (ray.phones, ray.emails) == ({"+18325550193"}, {"ray@example.com"})
     assert (alicia.phones, alicia.emails) == ({"+18325550288"}, {"af@example.com"})
+
+
+def test_one_phone_under_two_names_in_one_file_goes_to_review_and_renames_nobody():
+    registry = WorkerRegistry()
+    shared_phone = [
+        row("Maria", "Lopez", "832-555-0111"),
+        row("Jose", "Lopez", "832-555-0111", source_row=3),
+    ]
+    diff = compute_diff(registry, shared_phone, WEEK_1)
+
+    # Applying the second row would rename Maria and put two people on one badge.
+    assert diff.summary() == {"joiners": 1, "leavers": 0, "changed": 0,
+                              "unchanged": 0, "review": 1, "rejected": 0}
+    assert [w.name.display for w in registry.workers] == ["Maria Lopez"]
+
+    (flag,) = diff.review
+    assert flag.confidence is MatchConfidence.CONFLICT
+    assert flag.row.name.display == "Jose Lopez"
+    assert flag.worker is diff.joiners[0]
+    assert flag.candidates == [flag.worker]
+
+
+def test_same_row_twice_in_one_file_is_applied_and_not_flagged():
+    registry = WorkerRegistry()
+    twice = [
+        row("Maria", "Lopez", "832-555-0111"),
+        row("Maria", "Lopez", "832-555-0111", source_row=3),
+    ]
+    diff = compute_diff(registry, twice, WEEK_1)
+
+    # One person listed twice is a copy-paste slip, not a question for a human.
+    assert diff.summary()["review"] == 0
+    assert diff.summary()["unchanged"] == 1
+    assert len(registry.workers) == 1

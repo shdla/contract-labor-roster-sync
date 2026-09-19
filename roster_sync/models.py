@@ -32,9 +32,11 @@ class RosterRow:
 class MatchConfidence(str, Enum):
     """How a roster row was matched to a known worker.
 
-    STRONG matches are applied automatically. WEAK matches are surfaced for
-    human confirmation and never merged on their own: merging two people is
-    materially worse than carrying a duplicate for a day.
+    STRONG matches are applied automatically, except a second row in one file
+    that reaches the same worker under a different name (diff.py). WEAK
+    matches are surfaced for human confirmation and never merged on their
+    own: merging two people is materially worse than carrying a duplicate for
+    a day.
     """
 
     NEW = "new"

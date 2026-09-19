@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date
 
 from .identity import WorkerRegistry
-from .models import MatchConfidence, RosterDiff, RosterRow
+from .models import MatchConfidence, MatchResult, RosterDiff, RosterRow
 
 
 def compute_diff(
@@ -66,6 +66,23 @@ def compute_diff(
                 candidate.mark_seen(as_of)
                 seen_ids.add(candidate.worker_id)
             diff.review.append(result)
+            continue
+
+        if result.worker.worker_id in seen_ids and row.name != result.worker.name:
+            # A roster cannot list one person twice under two names, so the
+            # second row is a second person on a shared identifier, and
+            # applying it would rename the first. The earlier row already
+            # marked the worker seen, so nothing is marked here.
+            diff.review.append(MatchResult(
+                row=row,
+                confidence=MatchConfidence.CONFLICT,
+                worker=result.worker,
+                candidates=[result.worker],
+                note=(
+                    "two rows in this file resolve to the same worker under different "
+                    "names; obtain a distinct identifier from the agency"
+                ),
+            ))
             continue
 
         changes = registry.apply(result, as_of)
