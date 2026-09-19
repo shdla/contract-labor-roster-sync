@@ -196,7 +196,10 @@ python samples/make_hours_samples.py  # generate the agency hours file
 
 `run_pipeline.py` processes two roster files, grants credentials, runs the
 eligibility gate, provisions access twice to show the second run making no
-calls, and reconciles a pay period across three hours sources.
+calls, reconciles a pay period across three hours sources, and emits each
+week's `worker.joined` events to an in-memory sender. It then reruns the
+second week against the registry reloaded from the store and compares the
+event ids with the first pass.
 
 Without `--dry-run`, `send_test_event.py` posts to `ROSTER_WEBHOOK_URL` and
 signs with `ROSTER_SIGNING_SECRET` (default `dev-secret`). The HTTP adapters
@@ -210,7 +213,9 @@ rather than creating a duplicate worker. The eligibility gate blocks one
 worker with the reason stated. Provisioning makes seven API calls on the
 first run and none on the rerun. The reconciliation distinguishes hours the
 agency over-reported from hours worked at the work area that were never
-badged at the gate.
+badged at the gate. Event emission sends one `worker.joined` per joiner, and
+the rerun of week two sends the same two ids again, which is what lets the
+receiver discard them.
 
 Output of `python samples/run_pipeline.py`:
 
@@ -265,11 +270,22 @@ roster_week2.xlsx  header row 3  8 rows  rerun=False
       2024-07-16  agency over-reported  (agency 8.0, scanner 6.0, site 6.03)
   Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   UNRESOLVED [site] badge BADGE-UNKNOWN not mapped
+
+====================================================================
+6. Event emission to the iPaaS
+====================================================================
+  2024-07-08  rerun=False  {'sent': 6, 'failed': 0}
+  2024-07-15  rerun=False  {'sent': 2, 'failed': 0}
+  2024-07-15  rerun=True   {'sent': 2, 'failed': 0}  ids identical on rerun: True
 ```
 
 The single `deactivated` on the first run is a blocked worker who was never
 provisioned, so the state is recorded without a request, which is why eight
 transitions make seven calls.
+
+Step 6 prints a comparison and not the event ids themselves. Each id hashes
+a worker id, and worker ids are issued fresh on every demo run, so printed
+ids would differ on every run while the comparison does not.
 
 ## Spreadsheet defects handled
 
