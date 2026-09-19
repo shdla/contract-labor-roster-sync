@@ -26,12 +26,12 @@ eye, and the population was tracked in a second spreadsheet.
 
 ## The problem this solves
 
-**The roster carries no stable identifier.** No agency worker ID, no
+**The roster has no stable identifier.** No agency worker ID, no
 employee number. Given Monday's file and last Monday's file, there is no
 supplied key that says whether a given line is the same person as before.
 
-That single gap governs everything else. Provisioning has to be idempotent,
-so re-running a file must not create duplicate workers. Leaver detection
+Provisioning has to be idempotent,
+so re-running a file must not create duplicate workers. Leaver-detection
 drives badge deactivation, so a missed match leaves site access open for
 somebody who has gone. Joiner detection drives orientation scheduling, so a
 false positive sends somebody to a session they have already attended.
