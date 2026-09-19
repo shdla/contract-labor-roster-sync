@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 132 tests
+idempotent sync · three-way data reconciliation · 136 tests
 
 ## Scenario
 
@@ -70,8 +70,14 @@ acted on immediately: onboarding somebody a day early costs far less than
 somebody arriving unable to work.
 
 **An unresolved flag never deactivates anyone.** A row waiting for human
-review still counts its candidate worker as seen, so a question nobody has
-answered yet cannot quietly age somebody into a leaver.
+review still counts its candidate workers as seen for that roster period, so
+a question nobody has answered yet cannot quietly age somebody into a leaver,
+in that run or a later one. None of the row's data is applied. The protection
+lasts as long as the row keeps appearing and no longer, so an ignored queue
+cannot keep a departed worker's badge active. The cost is that `last_seen`
+means the last possible sighting: if the reviewer later rejects the match,
+the original worker's deactivation is delayed by at most the flagged periods,
+which is the fail-safe direction.
 
 **A review decision changes the data, not a status column.** Confirming that
 a flagged row belongs to an existing worker attaches the new phone or email
@@ -157,7 +163,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               132 tests covering normalization, matching, diffing,
+tests/               136 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -170,7 +176,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 132 tests
+python -m pytest tests/ -q            # 136 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

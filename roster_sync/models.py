@@ -85,10 +85,18 @@ class Worker:
 
         if self.first_seen is None:
             self.first_seen = seen_on
-        # Never backwards: a backfilled older file, or an older flag confirmed
-        # late, would otherwise turn the next single absence into a leaver.
-        self.last_seen = max(self.last_seen or seen_on, seen_on)
+        self.mark_seen(seen_on)
         return changes
+
+    def mark_seen(self, seen_on: date) -> None:
+        """Advance last_seen, never backwards. The one definition of a sighting date.
+
+        A backfilled older file, or an older flag confirmed late, would
+        otherwise turn the next single absence into a leaver. diff.py also
+        calls this for the candidates of a flagged row, so last_seen means the
+        last possible sighting, not the last certain one.
+        """
+        self.last_seen = max(self.last_seen or seen_on, seen_on)
 
 
 @dataclass

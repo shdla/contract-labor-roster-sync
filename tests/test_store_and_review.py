@@ -14,6 +14,7 @@ WEEK_1 = date(2024, 7, 8)
 WEEK_2 = date(2024, 7, 15)
 WEEK_3 = date(2024, 7, 22)
 WEEK_4 = date(2024, 7, 29)
+WEEK_5 = date(2024, 8, 5)
 
 
 def row(first, last, phone=None, email=None, role="material_handler", source_row=2):
@@ -410,6 +411,47 @@ def test_unresolved_flag_does_not_age_a_worker_into_a_false_leaver(store):
     assert registry.workers[0].active is True
 
 
+def test_flagged_periods_do_not_count_as_missed_after_the_row_stops_appearing(store):
+    registry = store.load_registry()
+    compute_diff(registry, [row("Curtis", "Delaney", "832.555.0266", "cd@example.com")], WEEK_1)
+    curtis = registry.workers[0]
+
+    # Curtis is on the week 2 and week 3 files in a form that needs review. Nobody answers.
+    ambiguous = row("Curtis", "Delaney", "832.555.0999", "new@example.com")
+    for week in (WEEK_2, WEEK_3):
+        diff = compute_diff(registry, [ambiguous], week)
+        store.save_reviews(diff.review, week)
+    assert len(store.open_reviews()) == 2
+    assert curtis.last_seen == WEEK_3
+    assert curtis.phones == {"+18325550266"}, "a sighting applies none of the row's data"
+
+    # His first real absence. Counted from week 1 it would look like his third.
+    fourth = compute_diff(registry, [], WEEK_4)
+    assert fourth.summary()["leavers"] == 0, "a flagged period is not a missed period"
+
+    # The protection follows the row, not the open flags: an ignored queue
+    # does not keep a departed worker's badge active.
+    fifth = compute_diff(registry, [], WEEK_5)
+    assert fifth.leavers == [curtis]
+    assert len(store.open_reviews()) == 2
+
+
+def test_flag_on_a_backfilled_period_protects_its_candidate_in_that_run():
+    registry = WorkerRegistry()
+    compute_diff(registry, [row("Curtis", "Delaney", "832.555.0266", "cd@example.com")], WEEK_1)
+    # Weeks 3 and 4 as a database written before flagged rows were recorded as
+    # sightings holds them: processed, Curtis flagged in both, last_seen week 1.
+    registry.record_period(WEEK_3)
+    registry.record_period(WEEK_4)
+
+    # Week 2 is backfilled and flags him again. Marked seen for week 2 he still
+    # has two later periods against him, so the flag in hand has to protect him.
+    backfill = compute_diff(registry, [row("Curtis", "Delaney", "832.555.0999")], WEEK_2)
+
+    assert backfill.summary()["review"] == 1
+    assert backfill.summary()["leavers"] == 0, "a pending flag must not deactivate a badge"
+
+
 def test_flag_naming_only_candidates_does_not_age_either_of_them():
     registry = WorkerRegistry()
     compute_diff(registry, [row("Chris", "Nguyen", "832.555.0101", "cn1@example.com")], WEEK_1)
@@ -425,3 +467,45 @@ def test_flag_naming_only_candidates_does_not_age_either_of_them():
     assert third.review[0].worker is None
     assert third.summary()["leavers"] == 0, "either candidate may be the person on site"
     assert all(w.active for w in registry.workers)
+
+
+def test_flag_naming_only_candidates_counts_as_a_sighting_of_each():
+    registry = WorkerRegistry()
+    compute_diff(registry, [row("Chris", "Nguyen", "832.555.0101", "cn1@example.com")], WEEK_1)
+    # Created directly, for the reason given in the test above.
+    registry.create(row("Chris", "Nguyen", "832.555.0102", "cn2@example.com"), WEEK_1)
+
+    ambiguous = row("Chris", "Nguyen", "832.555.0999")
+    compute_diff(registry, [ambiguous], WEEK_2)
+    third = compute_diff(registry, [ambiguous], WEEK_3)
+    assert third.review[0].worker is None
+    assert [w.last_seen for w in registry.workers] == [WEEK_3, WEEK_3]
+
+    fourth = compute_diff(registry, [], WEEK_4)
+    assert fourth.summary()["leavers"] == 0, "either candidate may be the person on site"
+
+    fifth = compute_diff(registry, [], WEEK_5)
+    assert fifth.summary()["leavers"] == 2
+
+
+def test_conflict_flag_counts_as_a_sighting_of_the_identifier_holder_too():
+    registry = WorkerRegistry()
+    week_1 = [
+        row("Chris", "Nguyen", "832.555.0101", "cn@example.com"),
+        row("Alicia", "Fontenot", "832.555.0177", "af@example.com"),
+    ]
+    nguyen, fontenot = compute_diff(registry, week_1, WEEK_1).joiners
+
+    # Nguyen's phone under Fontenot's name. The flag carries Nguyen as the
+    # worker and Fontenot as the candidate; either may be the person on site.
+    clash = row("Alicia", "Fontenot", "832.555.0101")
+    compute_diff(registry, [clash], WEEK_2)
+    flag = compute_diff(registry, [clash], WEEK_3).review[0]
+    assert flag.worker is nguyen and flag.candidates == [fontenot]
+    assert (nguyen.last_seen, fontenot.last_seen) == (WEEK_3, WEEK_3)
+
+    fourth = compute_diff(registry, [], WEEK_4)
+    assert fourth.summary()["leavers"] == 0, "either of them may be the person on site"
+
+    fifth = compute_diff(registry, [], WEEK_5)
+    assert fifth.summary()["leavers"] == 2

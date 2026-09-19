@@ -53,11 +53,17 @@ def compute_diff(
         if not result.confidence.is_automatic:
             # WEAK_NAME and CONFLICT both wait for a human. The row is not
             # applied, so nothing is provisioned on an uncertain identity.
-            # The worker it probably belongs to still counts as seen, so an
-            # unresolved flag cannot age somebody into a false leaver.
+            # Every worker it may belong to is still marked seen for this
+            # period, so a flagged period never counts as missed in a later
+            # run, answered or not. The protection ends when the row stops
+            # appearing: an ignored queue cannot keep a departed worker's
+            # badge active. seen_ids still guards this run, because on a
+            # backfilled period the later ones already count as missed.
             if result.worker is not None:
+                result.worker.mark_seen(as_of)
                 seen_ids.add(result.worker.worker_id)
             for candidate in result.candidates:
+                candidate.mark_seen(as_of)
                 seen_ids.add(candidate.worker_id)
             diff.review.append(result)
             continue
