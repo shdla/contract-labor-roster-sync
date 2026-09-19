@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 78 tests
+idempotent sync · three-way data reconciliation · 79 tests
 
 ## Scenario
 
@@ -151,7 +151,7 @@ roster_sync/
   events.py      signed, deduplicable webhook emission to the iPaaS
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators and an end-to-end demo
-tests/               78 tests covering normalization, matching, diffing,
+tests/               79 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -166,7 +166,7 @@ nothing about it, so the matching logic stays testable in memory.
 pip install -r requirements.txt        # Python 3.10 or newer
 python samples/make_samples.py        # generate messy sample workbooks
 python samples/make_hours_samples.py  # generate the agency hours file
-python -m pytest tests/ -q            # 78 tests
+python -m pytest tests/ -q            # 79 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 ```
 

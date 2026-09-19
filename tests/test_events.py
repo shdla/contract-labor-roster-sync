@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pytest
@@ -34,15 +35,24 @@ def test_event_id_differs_by_type_subject_or_period():
 def test_worker_joined_event_payload_shape():
     event = worker_joined_event(worker(), D1)
     assert event.payload == {
-        "type": "worker.joined",
-        "worker_id": "w-1",
         "name": "Tomas Ruiz",
         "role": "material_handler",
         "phones": ["8325550214"],
         "emails": ["tr@example.com"],
-        "period": "2024-07-15",
     }
     assert event.id == event_id("worker.joined", "w-1", D1)
+
+
+def test_body_is_an_envelope_with_routing_fields_at_the_top_level():
+    event = worker_joined_event(worker(), D1)
+    body = json.loads(event.body())
+    assert body == {
+        "event_id": event.id,
+        "type": "worker.joined",
+        "subject": "w-1",
+        "occurred_on": "2024-07-15",
+        "data": event.payload,
+    }
 
 
 def test_worker_with_no_email_still_carries_an_empty_array():

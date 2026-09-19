@@ -57,21 +57,30 @@ class Event:
     def id(self) -> str:
         return event_id(self.type, self.subject, self.period)
 
+    def envelope(self) -> dict[str, object]:
+        # Routing fields sit at the top level so the receiver can guard on
+        # type and dedup on event_id without opening data. The same id also
+        # travels in the dedup header; the body copy is for job history.
+        return {
+            "event_id": self.id,
+            "type": self.type,
+            "subject": self.subject,
+            "occurred_on": self.period.isoformat(),
+            "data": self.payload,
+        }
+
     def body(self) -> bytes:
         # sort_keys makes the signature reproducible regardless of the
         # payload dict's insertion order.
-        return json.dumps(self.payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return json.dumps(self.envelope(), sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 def worker_joined_event(worker: Worker, period: date) -> Event:
     payload = {
-        "type": "worker.joined",
-        "worker_id": worker.worker_id,
         "name": worker.name.display,
         "role": worker.role,
         "phones": sorted(worker.phones),
         "emails": sorted(worker.emails),
-        "period": period.isoformat(),
     }
     return Event(type="worker.joined", subject=worker.worker_id, period=period, payload=payload)
 
