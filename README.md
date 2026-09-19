@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 179 tests
+idempotent sync · three-way data reconciliation · 182 tests
 
 ## Scenario
 
@@ -83,7 +83,14 @@ which is the fail-safe direction.
 a flagged row belongs to an existing worker attaches the new phone or email
 to that worker permanently, so the same row matches on a strong signal next
 week and never reaches the queue again. Rejecting creates a second worker
-deliberately, with the same effect. A queue that cannot be cleared is an
+deliberately, from the identifiers on the row that nobody else holds, with
+the same effect. An identifier somebody already holds, a household phone or
+an agency dispatch address, stays with that worker, and a reject with nothing
+left to create the worker from is refused. One limit is known: while the
+agency keeps a held identifier on the new worker's row, the row's phone and
+email point at two workers, so it escalates again each week. Both workers
+count as seen and neither is changed; the remedy is the agency's file, not a
+rule that picks a winner. A queue that cannot be cleared is an
 alert, and people stop reading alerts. Decisions record who made them and
 when, because deactivating somebody's site access on a judgment call is the
 kind of thing that gets asked about later. A decided flag cannot be decided
@@ -189,7 +196,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               179 tests covering normalization, matching, diffing,
+tests/               182 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -202,7 +209,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 179 tests
+python -m pytest tests/ -q            # 182 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

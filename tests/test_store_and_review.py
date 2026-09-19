@@ -498,6 +498,70 @@ def test_store_deletes_an_identifier_row_only_for_the_worker_the_transfer_names(
     assert store.transfers_for(review_id) == [], "the log rolls back with the move it records"
 
 
+def test_rejecting_a_row_on_a_shared_phone_creates_the_worker_from_its_own_email(tmp_path):
+    path = tmp_path / "roster.db"
+    household = [
+        row("Tomas", "Ruiz", "8325550214", "tr@example.com"),
+        row("Maria", "Ruiz", "8325550214", "mr@example.com", source_row=3),
+    ]
+    with Store(path) as first:
+        registry = first.load_registry()
+        diff = compute_diff(registry, household, WEEK_1)
+        first.save_registry(registry)
+        (review_id,) = first.save_reviews(diff.review, WEEK_1)
+        (tomas,) = registry.workers
+
+        resolution = reject(first, registry, review_id, decided_by="a.diaz")
+
+        maria = resolution.worker
+        assert (maria.phones, maria.emails) == (set(), {"mr@example.com"})
+        assert resolution.changes == ["phone +18325550214 left with Tomas Ruiz"]
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        assert reloaded.get(tomas.worker_id).phones == {"+18325550214"}
+        assert reloaded.get(maria.worker_id).emails == {"mr@example.com"}
+        assert second.open_reviews() == []
+
+        # The limit of a reject here: while the agency lists the household
+        # phone on Maria's row, the phone says Tomas and the email says Maria,
+        # and conflicting strong signals escalate. Neither worker is changed.
+        again = compute_diff(reloaded, household, WEEK_2)
+        assert (again.summary()["unchanged"], again.summary()["review"]) == (1, 1)
+        assert again.review[0].candidates == [reloaded.get(tomas.worker_id), reloaded.get(maria.worker_id)]
+        assert reloaded.get(maria.worker_id).phones == set()
+
+
+def test_rejecting_a_row_on_a_shared_email_creates_the_worker_from_its_own_phone(store):
+    registry = store.load_registry()
+    dispatch = [
+        row("Maria", "Lopez", "832.555.0111", "dispatch@agency.example"),
+        row("Kevin", "Tran", "832.555.0122", "dispatch@agency.example", source_row=3),
+    ]
+    diff = compute_diff(registry, dispatch, WEEK_1)
+    store.save_registry(registry)
+    (review_id,) = store.save_reviews(diff.review, WEEK_1)
+
+    resolution = reject(store, registry, review_id, decided_by="a.diaz")
+
+    assert (resolution.worker.phones, resolution.worker.emails) == ({"+18325550122"}, set())
+    assert resolution.changes == ["email dispatch@agency.example left with Maria Lopez"]
+    assert store.load_registry().get(resolution.worker.worker_id).phones == {"+18325550122"}
+
+
+def test_rejecting_a_row_whose_every_identifier_is_held_names_the_holder_and_the_remedy(store):
+    registry = store.load_registry()
+    household = [row("Tomas", "Ruiz", "8325550214"), row("Maria", "Ruiz", "8325550214", source_row=3)]
+    diff = compute_diff(registry, household, WEEK_1)
+    (review_id,) = store.save_reviews(diff.review, WEEK_1)
+
+    with pytest.raises(ReviewResolutionError,
+                       match=r"phone \+18325550214 already belongs to Tomas Ruiz .* obtain one from the agency"):
+        reject(store, registry, review_id, decided_by="a.diaz")
+    assert len(registry.workers) == 1
+    assert [r.review_id for r in store.open_reviews()] == [review_id]
+
+
 def test_store_refuses_to_write_one_identifier_under_two_workers(store):
     # The backstop under the review guard: a registry that reached double ownership some other way.
     registry = WorkerRegistry()

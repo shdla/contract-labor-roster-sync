@@ -16,8 +16,9 @@ email another worker already holds is confirmed onto that holder, or onto
 somebody else only with transfer=True: the reviewer states that the
 identifier has left its holder (a recycled number), and it is taken from that
 worker, given to the confirmed one, and the move is recorded against the
-review. Such a flag cannot be rejected. Moving an identifier between workers
-is never done implicitly here.
+review. Rejecting such a flag creates the worker from the identifiers on the
+row that nobody holds, and is refused when there are none. Moving an
+identifier between workers is never done implicitly here.
 
 Both are recorded with who decided and when, because deactivating somebody's
 site access on the strength of a judgment call is the kind of thing that
@@ -26,7 +27,7 @@ gets asked about later.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .identity import WorkerRegistry
 from .models import MatchConfidence, MatchResult, Worker
@@ -103,20 +104,39 @@ def reject(
     review_id: str,
     decided_by: str,
 ) -> Resolution:
-    """Treat a flagged row as a distinct person and create the worker."""
+    """Treat a flagged row as a distinct person and create the worker.
+
+    A phone or email somebody already holds stays with them: a household
+    phone or an agency dispatch address identifies its first holder and
+    nobody else. The worker is created from what is left, and with nothing
+    left there is no way to recognize this person next week, so the reject
+    is refused.
+
+    The person is onboarded, but the flag can return: while the agency keeps
+    the held identifier on this row, the row carries two strong signals that
+    point at two workers, and that always escalates.
+    """
     review = _load_open(store, review_id)
 
-    conflict = _identifier_owner(registry, review, exclude=None)
-    if conflict is not None:
+    holders = registry.owners_of(review.row)
+    held = {value for w in holders for value in w.phones | w.emails}
+    row = replace(
+        review.row,
+        phone=None if review.row.phone in held else review.row.phone,
+        email=None if review.row.email in held else review.row.email,
+    )
+    if not row.is_usable:
         raise ReviewResolutionError(
-            f"{_held_identifier(review, conflict)} already belongs to "
-            f"{conflict.name.display}; this row cannot be a new person"
+            f"{_held_identifier(review, holders[0])} already belongs to "
+            f"{holders[0].name.display} and the row carries no other identifier; "
+            f"obtain one from the agency"
         )
 
-    worker = registry.create(review.row, review.as_of)
+    worker = registry.create(row, review.as_of)
     store.save_registry(registry)
     store.record_decision(review_id, "rejected", worker.worker_id, decided_by)
-    return Resolution("rejected", worker, [])
+    left = [f"{_held_identifier(review, w)} left with {w.name.display}" for w in holders]
+    return Resolution("rejected", worker, left)
 
 
 def _load_open(store: Store, review_id: str) -> PendingReview:
@@ -129,17 +149,8 @@ def _load_open(store: Store, review_id: str) -> PendingReview:
     return review
 
 
-def _identifier_owner(
-    registry: WorkerRegistry, review: PendingReview, exclude: str | None
-) -> Worker | None:
-    """Find a worker other than `exclude` already holding this row's phone or email.
-
-    Asks the identifier indexes, not match(): a flagged row whose identifier
-    belongs to a differently named worker probes as CONFLICT, never STRONG.
-    """
-    return next((w for w in registry.owners_of(review.row) if w.worker_id != exclude), None)
-
-
-def _held_identifier(review: PendingReview, owner: Worker) -> str | None:
-    """The identifier on the row that `owner` holds, so the refusal names the right one."""
-    return review.row.phone if review.row.phone in owner.phones else review.row.email
+def _held_identifier(review: PendingReview, owner: Worker) -> str:
+    """The identifier on the row that `owner` holds, with its kind, so a message names the right one."""
+    if review.row.phone in owner.phones:
+        return f"phone {review.row.phone}"
+    return f"email {review.row.email}"
