@@ -1,42 +1,32 @@
 """Contract labor roster sync: ingest, identity resolution, diffing, persistence,
-review, eligibility, provisioning, hours reconciliation, event emission."""
+review, eligibility, provisioning, hours reconciliation, event emission.
 
-from .credentials import Credential, CredentialStatus, EligibilityReport, Verdict, build_report, evaluate
+The root re-exports only the names the repository imports from it, which is
+what samples/run_pipeline.py uses. Everything else is imported from its
+submodule, as the tests do.
+"""
+
+from .credentials import Credential, build_report
 from .diff import compute_diff
-from .events import (
-    DeliveryError, Event, EmitOutcome, InMemoryEventSender, WebhookEventSender,
-    emit_diff, event_id, events_for_diff, worker_joined_event,
-)
-from .hours import HoursRecord, ReconciliationReport, read_agency_report, read_punch_log, read_site_feed, reconcile
-from .provisioning import HttpProvisioner, InMemoryProvisioner, OAuthClientCredentials, ProvisioningError, SyncOutcome, sync_access
-from .identity import WorkerRegistry
+from .events import InMemoryEventSender, emit_diff
+from .hours import read_agency_report, read_punch_log, read_site_feed, reconcile
 from .ingest import read_roster
-from .models import MatchConfidence, RosterDiff, RosterRow, Worker
-from .review import confirm, reject, ReviewResolutionError
-from .store import PendingReview, Store, file_hash
+from .provisioning import InMemoryProvisioner, sync_access
+from .store import Store, file_hash
 
 __all__ = [
     "Credential",
-    "CredentialStatus",
-    "EligibilityReport",
-    "Verdict",
-    "build_report",
-    "evaluate",
-    "compute_diff",
-    "DeliveryError", "Event", "EmitOutcome", "InMemoryEventSender", "WebhookEventSender",
-    "emit_diff", "event_id", "events_for_diff", "worker_joined_event",
-    "HoursRecord", "ReconciliationReport", "read_agency_report", "read_punch_log", "read_site_feed", "reconcile",
-    "HttpProvisioner", "InMemoryProvisioner", "OAuthClientCredentials", "ProvisioningError", "SyncOutcome", "sync_access",
-    "WorkerRegistry",
-    "read_roster",
-    "MatchConfidence",
-    "RosterDiff",
-    "RosterRow",
-    "Worker",
+    "InMemoryEventSender",
+    "InMemoryProvisioner",
     "Store",
-    "PendingReview",
+    "build_report",
+    "compute_diff",
+    "emit_diff",
     "file_hash",
-    "confirm",
-    "reject",
-    "ReviewResolutionError",
+    "read_agency_report",
+    "read_punch_log",
+    "read_roster",
+    "read_site_feed",
+    "reconcile",
+    "sync_access",
 ]

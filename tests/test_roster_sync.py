@@ -1,8 +1,11 @@
+import ast
 import uuid
 from datetime import date
+from pathlib import Path
 
 import pytest
 
+import roster_sync
 from roster_sync.diff import compute_diff
 from roster_sync.identity import WorkerRegistry
 from roster_sync.models import MatchConfidence, RosterRow
@@ -393,3 +396,21 @@ def test_same_row_twice_in_one_file_lists_the_joiner_once():
     # which is exactly the derived-joiner condition.
     assert len(first.joiners) == 1
     assert rerun.joiners == first.joiners
+
+
+# -- package root ---------------------------------------------------------
+
+
+def test_package_root_exports_exactly_the_names_the_repository_imports_from_it():
+    repo = Path(__file__).resolve().parent.parent
+    used = set()
+    for path in [*repo.glob("samples/*.py"), *repo.glob("tests/*.py")]:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "roster_sync":
+                used.update(alias.name for alias in node.names)
+
+    # A root name with no importer is a second index of the package, kept in
+    # step by hand. A name returns to the root when something imports it there.
+    assert set(roster_sync.__all__) == used
+    assert roster_sync.__all__ == sorted(roster_sync.__all__)
+    assert all(hasattr(roster_sync, name) for name in roster_sync.__all__)
