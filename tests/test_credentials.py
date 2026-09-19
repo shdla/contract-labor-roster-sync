@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 import yaml
@@ -6,11 +7,18 @@ import yaml
 from roster_sync.credentials import Credential, CredentialStatus, build_report, evaluate
 from roster_sync.diff import compute_diff
 from roster_sync.models import RosterRow, Worker
-from roster_sync.normalize import NormalizedName, normalize_email, normalize_name, normalize_phone
+from roster_sync.normalize import (
+    NormalizedName, normalize_email, normalize_name, normalize_phone, normalize_role,
+)
 from roster_sync.store import Store
 
 TODAY = date(2024, 7, 15)
-REQUIREMENTS = yaml.safe_load(open("config/roles.yaml"))["requirements"]
+
+# Resolved from this file, not the cwd, so the suite runs from any directory.
+ROLES_YAML = Path(__file__).resolve().parent.parent / "config" / "roles.yaml"
+with open(ROLES_YAML) as handle:
+    CONFIG = yaml.safe_load(handle)
+REQUIREMENTS = CONFIG["requirements"]
 
 
 def worker(role, wid="w-1", active=True):
@@ -105,6 +113,18 @@ def test_report_splits_population_and_skips_inactive():
     report = build_report(workers, creds, REQUIREMENTS, TODAY)
     assert report.summary() == {"cleared": 1, "blocked": 1, "warnings": 0}
     assert report.blocked[0].worker.worker_id == "b"
+
+
+# -- config ---------------------------------------------------------------
+
+
+def test_every_role_alias_is_reachable_and_maps_to_a_role_with_requirements():
+    aliases = CONFIG["aliases"]
+    for key, target in aliases.items():
+        # normalize_role looks up the folded cell text, so a key written with
+        # capitals or a hyphen could never match.
+        assert normalize_role(key, aliases) == target, f"alias {key!r} is not in folded form"
+        assert target in REQUIREMENTS, f"alias {key!r} targets {target}, which has no requirements"
 
 
 # -- persistence ----------------------------------------------------------

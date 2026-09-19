@@ -103,13 +103,7 @@ def test_first_sighting_is_new_and_gets_an_id():
 
 def test_name_typo_still_matches_on_phone():
     registry = WorkerRegistry()
-    registry.create(row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com").__class__(
-        source_row=2,
-        name=normalize_name("Marcus", "Webb"),
-        phone=normalize_phone("(832) 555-0142"),
-        email=normalize_email("mwebb@example.com"),
-        role="material_handler",
-    ), WEEK_1)
+    registry.create(row("Marcus", "Webb", "(832) 555-0142", "mwebb@example.com"), WEEK_1)
 
     result = registry.match(row("Marcuss", "Webb", "832.555.0142", "mwebb@example.com"))
     assert result.confidence is MatchConfidence.STRONG_PHONE
