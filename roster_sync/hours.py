@@ -15,6 +15,10 @@ is wrong:
       >        0      0     hours claimed that nobody recorded; dispute
       <        =      =     agency under-reported; correct the invoice
       =        =     n/a    clean on what we can see; site feed absent
+      ?        ?      ?     incomplete punch; verify before disputing. A
+                            source holds an in-punch with no out-punch, so
+                            its hours are unknown, not zero; this reading
+                            takes precedence over every row above
 
 Sources arrive through adapters that all produce the same HoursRecord, so
 the reconciliation never knows whether the site feed came from an SFTP
@@ -133,7 +137,8 @@ def read_punch_log(path: str | Path, source: str, id_column: str = "worker_id"
 
     Used for the local scanner and, once the mapping table exists, for the
     site feed. A missing out-punch produces zero hours and a note rather
-    than an assumption about when the person left.
+    than an assumption about when the person left; reconcile reads the note,
+    so that zero is never classified as a variance.
     """
     records: list[HoursRecord] = []
     unresolved: list[UnresolvedRow] = []
@@ -264,6 +269,8 @@ def reconcile(
     for record in agency + scanner + (site or []):
         if record.worker_id and period_start <= record.day <= period_end:
             by_key[(record.worker_id, record.day)][record.source] += record.hours
+    # A note marks an in-punch with no out-punch: proof of presence whose hours are unknown, not zero.
+    incomplete = {(r.worker_id, r.day) for r in agency + scanner + (site or []) if r.note}
 
     per_worker: dict[str, WorkerVariance] = {}
     for (worker_id, day), hours in sorted(by_key.items()):
@@ -273,7 +280,10 @@ def reconcile(
         entry.scanner += hours[SCANNER]
         if site is not None:
             entry.site = (entry.site or 0.0) + hours[SITE]
-        entry.days.append(DayVariance(day, hours[AGENCY], hours[SCANNER], site_hours,
-                                      _classify(hours[AGENCY], hours[SCANNER], site_hours, tolerance_hours)))
+        if (worker_id, day) in incomplete:
+            reading = "incomplete punch; verify before disputing"
+        else:
+            reading = _classify(hours[AGENCY], hours[SCANNER], site_hours, tolerance_hours)
+        entry.days.append(DayVariance(day, hours[AGENCY], hours[SCANNER], site_hours, reading))
 
     return ReconciliationReport(workers=list(per_worker.values()), unresolved=list(unresolved))

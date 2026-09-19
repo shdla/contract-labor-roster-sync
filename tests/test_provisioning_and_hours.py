@@ -345,6 +345,27 @@ def test_three_way_under_reported_and_mixed_variance(agency, scanner, site, read
     assert report.workers[0].days[0].reading == reading
 
 
+def no_out_punch(source):
+    return HoursRecord(source, "w", D1, 0.0, "missing out-punch")
+
+
+@pytest.mark.parametrize("scanner,site", [
+    ([no_out_punch(SCANNER)], None),                     # classified alone: agency over-reported
+    ([no_out_punch(SCANNER)], [no_out_punch(SITE)]),     # classified alone: claimed but unrecorded
+    ([rec(SCANNER, "w", D1, 8)], [no_out_punch(SITE)]),  # classified alone: present but not badged at site
+])
+def test_in_punch_without_an_out_punch_is_incomplete_not_a_variance(scanner, site):
+    # The row proves the worker punched in; its 0.0 hours are unknown, not evidence against the agency.
+    # D2 is complete in every source, so it must still be classified.
+    agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8)]
+    scanner = scanner + [rec(SCANNER, "w", D2, 8)]
+    site = None if site is None else site + [rec(SITE, "w", D2, 8)]
+    report = reconcile(agency, scanner, site, D1, D2)
+    days = {d.day: d.reading for d in report.workers[0].days}
+    assert days == {D1: "incomplete punch; verify before disputing", D2: "clean"}, "only the noted day is held back"
+    assert report.disputed == report.workers, "not clean, so it still reaches a person"
+
+
 def test_split_shift_punches_sum_and_days_outside_the_period_are_excluded():
     agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8), rec(AGENCY, "w", D3, 8)]
     # Out for lunch and back in is two punch pairs on one day.
