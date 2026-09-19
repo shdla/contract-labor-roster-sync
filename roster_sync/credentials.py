@@ -9,6 +9,9 @@ Rules:
 
 - A missing required credential blocks.
 - An expired required credential blocks.
+- A credential granted after the evaluation date is not held yet, so it
+  reads as missing. An orientation booked for Thursday clears nobody on
+  Tuesday.
 - A credential expiring within warn_days clears the worker but raises a
   warning, so renewals are scheduled before they become a block.
 - A worker whose role could not be mapped is blocked, never defaulted to
@@ -124,6 +127,11 @@ def evaluate(
     # wins: a renewed certificate supersedes the lapsed one it replaced.
     best: dict[str, Credential] = {}
     for credential in held:
+        # Not in effect yet, so not held: the gate does not know the
+        # requirement is met today, and a future renewal must not displace
+        # the certificate that is valid now.
+        if credential.granted_on > as_of:
+            continue
         current = best.get(credential.kind)
         if current is None or (credential.expires_on or date.max) > (current.expires_on or date.max):
             best[credential.kind] = credential

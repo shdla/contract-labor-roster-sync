@@ -109,6 +109,31 @@ def test_renewal_supersedes_the_lapsed_certificate(certificates):
     assert v.cleared, "the newer certificate must win over the expired one"
 
 
+def test_credential_dated_in_the_future_is_not_held_yet():
+    """An orientation booked for Thursday must not open the gate on Tuesday."""
+    booked = cred("safety_orientation", granted=TODAY + timedelta(days=1))
+    v = evaluate(worker("material_handler"), [booked, cred("ppe_issued")], REQUIREMENTS, TODAY)
+    assert not v.cleared
+    assert [(f.kind, f.status) for f in v.blocking] == [("safety_orientation", CredentialStatus.MISSING)]
+
+    granted_today = cred("safety_orientation", granted=TODAY)
+    assert evaluate(worker("material_handler"), [granted_today, cred("ppe_issued")], REQUIREMENTS, TODAY).cleared
+
+
+CURRENT = cred("forklift_certification", granted=TODAY - timedelta(days=325), expires=TODAY + timedelta(days=40))
+NEXT = cred("forklift_certification", granted=TODAY + timedelta(days=30), expires=TODAY + timedelta(days=395))
+
+
+# Both orders, as above: a later expiry must not win before its grant date.
+@pytest.mark.parametrize("certificates", [[CURRENT, NEXT], [NEXT, CURRENT]], ids=["current_first", "next_first"])
+def test_future_dated_renewal_does_not_displace_the_current_certificate(certificates):
+    held = [cred("safety_orientation"), cred("ppe_issued")] + certificates
+    v = evaluate(worker("forklift_operator"), held, REQUIREMENTS, TODAY)
+    assert v.cleared
+    finding = next(f for f in v.findings if f.kind == "forklift_certification")
+    assert finding.expires_on == CURRENT.expires_on, "reported against the certificate in effect today"
+
+
 def test_unmapped_role_blocks_rather_than_defaulting():
     v = evaluate(worker(None), [cred("safety_orientation"), cred("ppe_issued")], REQUIREMENTS, TODAY)
     assert not v.cleared

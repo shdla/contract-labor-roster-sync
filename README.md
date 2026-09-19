@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 146 tests
+idempotent sync · three-way data reconciliation · 149 tests
 
 ## Scenario
 
@@ -95,9 +95,12 @@ unmapped role means the requirements are unknown, and guessing in the
 permissive direction is how somebody ends up on a forklift without a
 certificate. Missing or expired credentials block; a credential inside the
 warning window clears the worker but is reported, so renewals get scheduled
-before they become a block. Credential records are append-only — a renewal
-is a new row, and the gate takes the latest expiry per kind — so the history
-of what somebody held and when is never overwritten.
+before they become a block. A record dated after the evaluation date is not
+held yet and reads as missing: an orientation booked for Thursday clears
+nobody on Tuesday. Credential records are append-only — a renewal is a new
+row, and the gate takes the latest expiry per kind among the records already
+in effect — so the history of what somebody held and when is never
+overwritten.
 
 **Provisioning is idempotent by state comparison, not by hope.** The last
 state pushed for each worker is recorded, so a nightly run against an
@@ -163,7 +166,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               146 tests covering normalization, matching, diffing,
+tests/               149 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -176,7 +179,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 146 tests
+python -m pytest tests/ -q            # 149 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
