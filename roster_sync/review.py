@@ -12,9 +12,12 @@ Two outcomes:
 - reject   the row is a different person; a worker is created deliberately
 
 Neither outcome may give an identifier a second owner. A flag whose phone or
-email another worker already holds can be confirmed only onto that holder and
-cannot be rejected; one whose phone and email have different holders stays
-open. Moving an identifier between workers is never done implicitly here.
+email another worker already holds is confirmed onto that holder, or onto
+somebody else only with transfer=True: the reviewer states that the
+identifier has left its holder (a recycled number), and it is taken from that
+worker, given to the confirmed one, and the move is recorded against the
+review. Such a flag cannot be rejected. Moving an identifier between workers
+is never done implicitly here.
 
 Both are recorded with who decided and when, because deactivating somebody's
 site access on the strength of a judgment call is the kind of thing that
@@ -27,7 +30,7 @@ from dataclasses import dataclass
 
 from .identity import WorkerRegistry
 from .models import MatchConfidence, MatchResult, Worker
-from .store import PendingReview, Store
+from .store import IdentifierTransfer, PendingReview, Store
 
 
 @dataclass
@@ -56,24 +59,40 @@ def confirm(
     review_id: str,
     worker_id: str,
     decided_by: str,
+    *,
+    transfer: bool = False,
 ) -> Resolution:
-    """Attach a flagged row to an existing worker and persist the decision."""
+    """Attach a flagged row to an existing worker and persist the decision.
+
+    transfer=True takes the row's phone or email from any other worker who
+    holds it. It is a separate argument so that a confirm alone can never
+    cost somebody else an identifier.
+    """
     review = _load_open(store, review_id)
     worker = registry.get(worker_id)
     if worker is None:
         raise ReviewResolutionError(f"no worker {worker_id}")
 
-    conflict = _identifier_owner(registry, review, exclude=worker_id)
-    if conflict is not None:
+    holders = [w for w in registry.owners_of(review.row) if w.worker_id != worker_id]
+    if holders and not transfer:
         raise ReviewResolutionError(
-            f"{_held_identifier(review, conflict)} already belongs to "
-            f"{conflict.name.display}; resolve that worker first"
+            f"{_held_identifier(review, holders[0])} already belongs to "
+            f"{holders[0].name.display}; confirm with transfer=True only if it has left that worker"
         )
+    # Released before apply(), so the identifier never has two holders in memory.
+    transfers = [
+        IdentifierTransfer(review_id, kind, value, holder.worker_id, worker_id)
+        for holder in holders
+        for kind, value in registry.release(holder, review.row)
+    ]
 
     result = MatchResult(row=review.row, confidence=MatchConfidence.WEAK_NAME, worker=worker)
-    changes = registry.apply(result, review.as_of)
+    changes = [
+        f"{t.kind} {t.value} transferred from {registry.get(t.from_worker_id).name.display}"
+        for t in transfers
+    ] + registry.apply(result, review.as_of)
 
-    store.save_registry(registry)
+    store.save_registry(registry, transfers)
     store.record_decision(review_id, "confirmed", worker.worker_id, decided_by)
     return Resolution("confirmed", worker, changes)
 

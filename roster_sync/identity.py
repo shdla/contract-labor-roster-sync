@@ -177,6 +177,25 @@ class WorkerRegistry:
         self._index(worker)
         return changes
 
+    def release(self, worker: Worker, row: RosterRow) -> list[tuple[str, str]]:
+        """Take the row's phone and email off a worker who holds them. Returns the (kind, value) pairs.
+
+        The only way an identifier leaves a worker, and only review.confirm
+        calls it, on a reviewer's explicit transfer. The set and the index
+        change together, so the identifier has no owner until apply() gives
+        it one, and never two.
+        """
+        released: list[tuple[str, str]] = []
+        if row.phone in worker.phones:
+            worker.phones.discard(row.phone)
+            self._by_phone.pop(row.phone, None)
+            released.append(("phone", row.phone))
+        if row.email in worker.emails:
+            worker.emails.discard(row.email)
+            self._by_email.pop(row.email, None)
+            released.append(("email", row.email))
+        return released
+
     def deactivate(self, worker: Worker) -> None:
         worker.active = False
 

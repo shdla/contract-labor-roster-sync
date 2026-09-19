@@ -219,6 +219,21 @@ def test_phone_and_email_pointing_at_different_workers_escalate():
     assert result.candidates == [ray, alicia]
 
 
+def test_released_identifiers_have_no_owner_until_a_row_is_applied_again():
+    registry = WorkerRegistry()
+    alicia = registry.create(row("Alicia", "Fontenot", "832.555.0288", "af@example.com"), WEEK_1)
+    registry.apply(registry.match(row("Alicia", "Fontenot", "832.555.0301", "af@example.com")), WEEK_2)
+    reissued = row("Ray", "Villanueva", "832.555.0288", "af@example.com")
+
+    assert registry.release(alicia, reissued) == [("phone", "+18325550288"), ("email", "af@example.com")]
+
+    # Only what the row carries, and the set and the index together: an
+    # identifier left in either index would still match Alicia.
+    assert (alicia.phones, alicia.emails) == ({"+18325550301"}, set())
+    assert registry.owners_of(reissued) == []
+    assert registry.match(reissued).confidence is MatchConfidence.NEW
+
+
 def test_row_without_any_contact_identifier_is_rejected():
     bad = row("Jerome", "Baptiste", "n/a", "no email")
     assert not bad.is_usable

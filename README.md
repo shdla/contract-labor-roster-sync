@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 175 tests
+idempotent sync · three-way data reconciliation · 179 tests
 
 ## Scenario
 
@@ -130,7 +130,13 @@ dispute can be named to a date instead of argued as a total.
 `(kind, value)` in `worker_identifiers` means a phone or email can only point
 at one worker. An attempt to merge a flagged row onto a worker who does not
 own its identifier is refused rather than silently splitting a person across
-two records.
+two records. A recycled number is the case where the move is right: the
+previous holder has left and the carrier has reissued the number. The
+reviewer says so explicitly, `confirm(..., transfer=True)`, and the identifier
+is taken from the previous holder, deleted and re-inserted under the
+confirmed worker in one transaction, and logged in `identifier_transfers`
+against the review that authorized it. Nothing moves an identifier on its
+own.
 
 **Returning workers are not new hires.** A rolled-off worker who reappears
 reactivates under the original identifier, preserving credential history.
@@ -174,7 +180,7 @@ roster_sync/
   identity.py    WorkerRegistry and the matching cascade
   diff.py        joiners, leavers, changes, review queue
   store.py       SQLite persistence: workers, periods, review queue,
-                 credentials, access state, badge map
+                 identifier transfers, credentials, access state, badge map
   review.py      confirm / reject resolution of flagged rows
   credentials.py credential records and the eligibility gate
   provisioning.py access-system adapters, OAuth client, idempotent sync
@@ -183,7 +189,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               175 tests covering normalization, matching, diffing,
+tests/               179 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -196,7 +202,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 175 tests
+python -m pytest tests/ -q            # 179 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

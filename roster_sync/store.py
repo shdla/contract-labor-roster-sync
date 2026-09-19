@@ -1,6 +1,6 @@
 """SQLite persistence for everything that must survive between runs: workers
-and their identifiers, roster periods, the review queue, credentials, access
-state and the badge map.
+and their identifiers, roster periods, the review queue and the identifier
+transfers it authorized, credentials, access state and the badge map.
 
 State has to survive between runs for three reasons. The registry is only
 useful if this week's file can be compared against last week's population.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -79,6 +80,19 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
 
 CREATE INDEX IF NOT EXISTS idx_reviews_open
     ON pending_reviews (decision) WHERE decision IS NULL;
+
+-- An identifier a reviewer moved from one worker to another, by the review
+-- that authorized it. worker_identifiers holds only the current owner, so
+-- without this the previous one is unrecoverable. Append-only, and written
+-- in the transaction that moves the identifier: no move without its record.
+CREATE TABLE IF NOT EXISTS identifier_transfers (
+    review_id      TEXT NOT NULL REFERENCES pending_reviews(review_id),
+    kind           TEXT NOT NULL,
+    value          TEXT NOT NULL,
+    from_worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+    to_worker_id   TEXT NOT NULL REFERENCES workers(worker_id),
+    transferred_at TEXT NOT NULL
+);
 
 -- Credential records are append-only. A renewal is a new row, never an
 -- update to the old one, so the history of what somebody held and when
@@ -164,6 +178,17 @@ class PendingReview:
         return f"[{self.confidence.value}] {name} / {contact}{against} — {self.note}"
 
 
+@dataclass(frozen=True)
+class IdentifierTransfer:
+    """One phone or email a confirmed review took from one worker and gave to another."""
+
+    review_id: str
+    kind: str
+    value: str
+    from_worker_id: str
+    to_worker_id: str
+
+
 class Store:
     """A SQLite-backed home for all persisted state."""
 
@@ -214,7 +239,8 @@ class Store:
 
         return registry
 
-    def save_registry(self, registry: WorkerRegistry) -> None:
+    def save_registry(self, registry: WorkerRegistry,
+                      transfers: Sequence[IdentifierTransfer] = ()) -> None:
         """Write workers, identifiers and processed periods back in one transaction.
 
         Idempotent by construction. Periods commit with the workers whose
@@ -224,8 +250,28 @@ class Store:
         An identifier already stored under another worker raises, and the
         transaction rolls the whole save back. This is the backstop: by then
         the in-memory registry is already wrong, so review.py refuses first.
+
+        transfers are the identifiers review.confirm moved. Each stored row
+        is deleted and logged here, in the transaction that inserts it under
+        its new owner. Nothing else deletes an identifier row, so a move
+        nobody named still raises.
         """
         with self._connection:
+            for moved in transfers:
+                # Only the row of the worker it was taken from: any other stored owner still raises below.
+                self._connection.execute(
+                    "DELETE FROM worker_identifiers WHERE kind = ? AND value = ? AND worker_id = ?",
+                    (moved.kind, moved.value, moved.from_worker_id),
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO identifier_transfers
+                        (review_id, kind, value, from_worker_id, to_worker_id, transferred_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (moved.review_id, moved.kind, moved.value,
+                     moved.from_worker_id, moved.to_worker_id, _now()),
+                )
             for worker in registry.workers:
                 self._connection.execute(
                     """
@@ -369,6 +415,17 @@ class Store:
                 """,
                 (decision, worker_id, decided_by, _now(), review_id),
             )
+
+    def transfers_for(self, review_id: str) -> list[IdentifierTransfer]:
+        """The identifiers a review's confirm moved between workers, oldest first."""
+        rows = self._connection.execute(
+            "SELECT * FROM identifier_transfers WHERE review_id = ? ORDER BY rowid", (review_id,)
+        ).fetchall()
+        return [
+            IdentifierTransfer(r["review_id"], r["kind"], r["value"],
+                               r["from_worker_id"], r["to_worker_id"])
+            for r in rows
+        ]
 
     # -- credentials ------------------------------------------------------
 

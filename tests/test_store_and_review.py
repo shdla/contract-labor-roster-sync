@@ -5,10 +5,10 @@ import pytest
 
 from roster_sync.diff import compute_diff
 from roster_sync.identity import WorkerRegistry
-from roster_sync.models import MatchConfidence, RosterRow, Worker
+from roster_sync.models import MatchConfidence, MatchResult, RosterRow, Worker
 from roster_sync.normalize import normalize_email, normalize_name, normalize_phone
 from roster_sync.review import ReviewResolutionError, confirm, reject
-from roster_sync.store import Store, file_hash
+from roster_sync.store import IdentifierTransfer, Store, file_hash
 
 WEEK_1 = date(2024, 7, 8)
 WEEK_2 = date(2024, 7, 15)
@@ -405,6 +405,97 @@ def test_flag_whose_phone_and_email_have_different_owners_leaves_both_intact(tmp
         reloaded = second.load_registry()
         assert reloaded.get(ana.worker_id).phones == {"+18325550111"}
         assert reloaded.get(ben.worker_id).emails == {"bo@example.com"}
+
+
+def test_confirming_with_transfer_moves_a_recycled_phone_and_leaves_it_one_owner(tmp_path):
+    path = tmp_path / "roster.db"
+    recycled = row("Ray", "Villanueva", "832.555.0288")
+    with Store(path) as first:
+        registry = first.load_registry()
+        week_1 = [
+            row("Alicia", "Fontenot", "832.555.0288", "af@example.com"),
+            row("Ray", "Villanueva", "832.555.0193", "rv@example.com"),
+        ]
+        compute_diff(registry, week_1, WEEK_1)
+        first.save_registry(registry)
+        fontenot, villanueva = registry.workers
+
+        # Fontenot has left, and the carrier reissued her number to Villanueva.
+        diff = compute_diff(registry, [recycled], WEEK_2)
+        (review_id,) = first.save_reviews(diff.review, WEEK_2)
+
+        resolution = confirm(first, registry, review_id, villanueva.worker_id,
+                             decided_by="a.diaz", transfer=True)
+
+        assert resolution.changes == [
+            "phone +18325550288 transferred from Alicia Fontenot",
+            "phone added +18325550288",
+        ]
+        assert fontenot.phones == set()
+        assert registry.owners_of(recycled) == [villanueva]
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        holders = [w.worker_id for w in reloaded.workers if "+18325550288" in w.phones]
+        assert holders == [villanueva.worker_id]
+        assert reloaded.get(fontenot.worker_id).emails == {"af@example.com"}, "only the row's identifier moves"
+        assert second.transfers_for(review_id) == [IdentifierTransfer(
+            review_id, "phone", "+18325550288", fontenot.worker_id, villanueva.worker_id)]
+
+        # Invariant 6 across a restart: the same row is a strong match next week.
+        third = compute_diff(reloaded, [recycled], WEEK_3)
+        assert third.summary()["review"] == 0
+        assert third.unchanged == [reloaded.get(villanueva.worker_id)]
+
+
+def test_confirming_with_transfer_clears_a_flag_whose_phone_and_email_have_different_owners(tmp_path):
+    path = tmp_path / "roster.db"
+    clash = row("Ana", "Reyes", "832.555.0111", "bo@example.com")
+    with Store(path) as first:
+        registry = first.load_registry()
+        week_1 = [row("Ana", "Reyes", "832.555.0111"), row("Ben", "Okafor", email="bo@example.com")]
+        compute_diff(registry, week_1, WEEK_1)
+        first.save_registry(registry)
+        ana, ben = registry.workers
+
+        # Ben has left, and the agency reissued his mailbox to Ana.
+        diff = compute_diff(registry, [clash], WEEK_2)
+        (review_id,) = first.save_reviews(diff.review, WEEK_2)
+
+        resolution = confirm(first, registry, review_id, ana.worker_id, decided_by="a.diaz", transfer=True)
+        assert resolution.changes == [
+            "email bo@example.com transferred from Ben Okafor",
+            "email added bo@example.com",
+        ]
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        assert reloaded.get(ben.worker_id).emails == set()
+        assert reloaded.get(ana.worker_id).emails == {"bo@example.com"}
+        assert second.open_reviews() == []
+        assert compute_diff(reloaded, [clash], WEEK_3).summary()["unchanged"] == 1
+
+
+def test_store_deletes_an_identifier_row_only_for_the_worker_the_transfer_names(store):
+    registry = store.load_registry()
+    week_1 = [row("Ana", "Reyes", "832.555.0111"), row("Ben", "Okafor", email="bo@example.com")]
+    compute_diff(registry, week_1, WEEK_1)
+    store.save_registry(registry)
+    ana, ben = registry.workers
+
+    moved = row("Ben", "Okafor", "832.555.0111")
+    (review_id,) = store.save_reviews([registry.match(moved)], WEEK_2)
+    registry.release(ana, moved)
+    registry.apply(MatchResult(row=moved, confidence=MatchConfidence.WEAK_NAME, worker=ben), WEEK_2)
+    assert registry.owners_of(moved) == [ben]
+
+    # The registry moved Ana's phone to Ben, but the transfer names the wrong previous holder.
+    wrong = IdentifierTransfer(review_id, "phone", "+18325550111", ben.worker_id, ben.worker_id)
+    with pytest.raises(sqlite3.IntegrityError, match="belongs to worker"):
+        store.save_registry(registry, [wrong])
+
+    assert store.load_registry().get(ana.worker_id).phones == {"+18325550111"}
+    assert store.transfers_for(review_id) == [], "the log rolls back with the move it records"
 
 
 def test_store_refuses_to_write_one_identifier_under_two_workers(store):
