@@ -131,6 +131,17 @@ class WorkerRegistry:
 
         return MatchResult(row=row, confidence=MatchConfidence.NEW)
 
+    def owners_of(self, row: RosterRow) -> list[Worker]:
+        """Workers holding this row's phone or email, phone first, each once.
+
+        Ownership is a fact in the indexes. match() cannot answer it: it folds
+        the name in, so an identifier held by a differently named worker comes
+        back as CONFLICT rather than as an owner.
+        """
+        phone_hit = self._by_phone.get(row.phone) if row.phone else None
+        email_hit = self._by_email.get(row.email) if row.email else None
+        return [self._workers[i] for i in dict.fromkeys((phone_hit, email_hit)) if i]
+
     # -- write ------------------------------------------------------------
 
     def create(self, row: RosterRow, seen_on: date) -> Worker:

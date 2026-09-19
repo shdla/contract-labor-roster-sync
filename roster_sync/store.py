@@ -207,7 +207,12 @@ class Store:
         return registry
 
     def save_registry(self, registry: WorkerRegistry) -> None:
-        """Write the whole registry back. Idempotent by construction."""
+        """Write the whole registry back. Idempotent by construction.
+
+        An identifier already stored under another worker raises, and the
+        transaction rolls the whole save back. This is the backstop: by then
+        the in-memory registry is already wrong, so review.py refuses first.
+        """
         with self._connection:
             for worker in registry.workers:
                 self._connection.execute(
@@ -235,11 +240,20 @@ class Store:
                 )
                 pairs = [("phone", v) for v in worker.phones] + [("email", v) for v in worker.emails]
                 for kind, value in pairs:
+                    held = self._connection.execute(
+                        "SELECT worker_id FROM worker_identifiers WHERE kind = ? AND value = ?",
+                        (kind, value),
+                    ).fetchone()
+                    if held is not None and held["worker_id"] != worker.worker_id:
+                        raise sqlite3.IntegrityError(
+                            f"{kind} {value} belongs to worker {held['worker_id']}; "
+                            f"refusing to attach it to worker {worker.worker_id}"
+                        )
                     self._connection.execute(
                         """
                         INSERT INTO worker_identifiers (kind, value, worker_id)
                         VALUES (?, ?, ?)
-                        ON CONFLICT(kind, value) DO UPDATE SET worker_id = excluded.worker_id
+                        ON CONFLICT(kind, value) DO NOTHING
                         """,
                         (kind, value, worker.worker_id),
                     )

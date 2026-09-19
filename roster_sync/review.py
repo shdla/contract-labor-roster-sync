@@ -11,6 +11,11 @@ Two outcomes:
 - confirm  the row belongs to an existing worker; identifiers are merged in
 - reject   the row is a different person; a worker is created deliberately
 
+Neither outcome may give an identifier a second owner. A flag whose phone or
+email another worker already holds can be confirmed only onto that holder and
+cannot be rejected; one whose phone and email have different holders stays
+open. Moving an identifier between workers is never done implicitly here.
+
 Both are recorded with who decided and when, because deactivating somebody's
 site access on the strength of a judgment call is the kind of thing that
 gets asked about later.
@@ -52,7 +57,7 @@ def confirm(
     conflict = _identifier_owner(registry, review, exclude=worker_id)
     if conflict is not None:
         raise ReviewResolutionError(
-            f"{review.row.phone or review.row.email} already belongs to "
+            f"{_held_identifier(review, conflict)} already belongs to "
             f"{conflict.name.display}; resolve that worker first"
         )
 
@@ -76,7 +81,7 @@ def reject(
     conflict = _identifier_owner(registry, review, exclude=None)
     if conflict is not None:
         raise ReviewResolutionError(
-            f"{review.row.phone or review.row.email} already belongs to "
+            f"{_held_identifier(review, conflict)} already belongs to "
             f"{conflict.name.display}; this row cannot be a new person"
         )
 
@@ -96,12 +101,14 @@ def _load_open(store: Store, review_id: str) -> PendingReview:
 def _identifier_owner(
     registry: WorkerRegistry, review: PendingReview, exclude: str | None
 ) -> Worker | None:
-    """Find a worker already holding this row's phone or email."""
-    probe = registry.match(review.row)
-    if probe.worker is None:
-        return None
-    if probe.confidence not in (MatchConfidence.STRONG_PHONE, MatchConfidence.STRONG_EMAIL):
-        return None
-    if exclude is not None and probe.worker.worker_id == exclude:
-        return None
-    return probe.worker
+    """Find a worker other than `exclude` already holding this row's phone or email.
+
+    Asks the identifier indexes, not match(): a flagged row whose identifier
+    belongs to a differently named worker probes as CONFLICT, never STRONG.
+    """
+    return next((w for w in registry.owners_of(review.row) if w.worker_id != exclude), None)
+
+
+def _held_identifier(review: PendingReview, owner: Worker) -> str | None:
+    """The identifier on the row that `owner` holds, so the refusal names the right one."""
+    return review.row.phone if review.row.phone in owner.phones else review.row.email

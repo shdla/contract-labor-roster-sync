@@ -1,10 +1,11 @@
+import sqlite3
 from datetime import date
 
 import pytest
 
 from roster_sync.diff import compute_diff
 from roster_sync.identity import WorkerRegistry
-from roster_sync.models import RosterRow
+from roster_sync.models import MatchConfidence, RosterRow, Worker
 from roster_sync.normalize import normalize_email, normalize_name, normalize_phone
 from roster_sync.review import ReviewResolutionError, confirm, reject
 from roster_sync.store import Store, file_hash
@@ -254,6 +255,79 @@ def test_confirming_a_stale_flag_whose_duplicate_was_rejected_is_refused(store):
     with pytest.raises(ReviewResolutionError):
         confirm(store, registry, week3_flag, curtis.worker_id, decided_by="a.diaz")
     assert "+18325550999" not in curtis.phones
+
+
+def test_conflict_flag_cannot_give_a_held_phone_a_second_owner(tmp_path):
+    path = tmp_path / "roster.db"
+    with Store(path) as first:
+        registry = first.load_registry()
+        week_1 = [
+            row("Chris", "Nguyen", "832.555.0101", "cn@example.com"),
+            row("Alicia", "Fontenot", "832.555.0177", "af@example.com"),
+        ]
+        compute_diff(registry, week_1, WEEK_1)
+        first.save_registry(registry)
+        nguyen, fontenot = registry.workers
+
+        # Nguyen's phone under Fontenot's name: the phone and the name point at different workers.
+        diff = compute_diff(registry, [row("Alicia", "Fontenot", "832.555.0101")], WEEK_2)
+        first.save_reviews(diff.review, WEEK_2)
+        open_items = first.open_reviews()
+        assert len(open_items) == 1
+        assert open_items[0].confidence is MatchConfidence.CONFLICT
+        review_id = open_items[0].review_id
+
+        with pytest.raises(ReviewResolutionError):
+            confirm(first, registry, review_id, fontenot.worker_id, decided_by="a.diaz")
+        assert "+18325550101" not in fontenot.phones
+
+        with pytest.raises(ReviewResolutionError):
+            reject(first, registry, review_id, decided_by="a.diaz")
+        assert len(registry.workers) == 2
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        assert reloaded.get(nguyen.worker_id).phones == {"+18325550101"}
+        assert [r.review_id for r in second.open_reviews()] == [review_id]
+
+
+def test_flag_whose_phone_and_email_have_different_owners_leaves_both_intact(tmp_path):
+    path = tmp_path / "roster.db"
+    with Store(path) as first:
+        registry = first.load_registry()
+        week_1 = [row("Ana", "Reyes", "832.555.0111"), row("Ben", "Okafor", email="bo@example.com")]
+        compute_diff(registry, week_1, WEEK_1)
+        first.save_registry(registry)
+        ana, ben = registry.workers
+
+        clash = row("Cal", "Unger", "832.555.0111", "bo@example.com")
+        diff = compute_diff(registry, [clash], WEEK_2)
+        first.save_reviews(diff.review, WEEK_2)
+        (review,) = first.open_reviews()
+
+        with pytest.raises(ReviewResolutionError):
+            reject(first, registry, review.review_id, decided_by="a.diaz")
+        assert len(registry.workers) == 2
+
+        # Ana owns the phone, but confirming onto her would hand her Ben's email.
+        with pytest.raises(ReviewResolutionError, match="bo@example.com already belongs to Ben Okafor"):
+            confirm(first, registry, review.review_id, ana.worker_id, decided_by="a.diaz")
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        assert reloaded.get(ana.worker_id).phones == {"+18325550111"}
+        assert reloaded.get(ben.worker_id).emails == {"bo@example.com"}
+
+
+def test_store_refuses_to_write_one_identifier_under_two_workers(store):
+    # The backstop under the review guard: a registry that reached double ownership some other way.
+    registry = WorkerRegistry()
+    registry.adopt(Worker("worker-a", normalize_name("Ana", "Reyes"), phones={"+18325550111"}))
+    registry.adopt(Worker("worker-b", normalize_name("Ben", "Okafor"), phones={"+18325550111"}))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.save_registry(registry)
+    assert store.load_registry().workers == [], "the whole save rolls back, worker rows included"
 
 
 def test_unresolved_flag_does_not_age_a_worker_into_a_false_leaver(store):
