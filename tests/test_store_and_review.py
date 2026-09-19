@@ -111,6 +111,26 @@ def test_retried_job_in_a_new_process_does_not_deactivate_anyone(tmp_path):
         assert third.summary()["leavers"] == 1
 
 
+def test_save_registry_alone_persists_the_periods_absence_is_derived_from(tmp_path):
+    path = tmp_path / "roster.db"
+    present = row("Tomas", "Ruiz", "8325550214", "tr@example.com")
+    absent = row("Ray", "Villanueva", "832.555.0193", "rv@example.com")
+    weeks = [(WEEK_1, [present, absent]), (WEEK_2, [present]), (WEEK_3, [present]), (WEEK_4, [present])]
+
+    leavers = []
+    for as_of, rows in weeks:
+        # A fresh process each week, and Store.record_period is never called.
+        with Store(path) as run:
+            registry = run.load_registry()
+            leavers.append(compute_diff(registry, rows, as_of).summary()["leavers"])
+            run.save_registry(registry)
+
+    # Without the stored periods each process knows one period, and nobody ever leaves.
+    assert leavers == [0, 0, 1, 0]
+    with Store(path) as check:
+        assert check.load_registry().periods == [WEEK_1, WEEK_2, WEEK_3, WEEK_4]
+
+
 def test_record_period_is_idempotent_and_keeps_the_first_hash(tmp_path, store):
     file_a = tmp_path / "a.txt"
     file_a.write_text("roster contents")

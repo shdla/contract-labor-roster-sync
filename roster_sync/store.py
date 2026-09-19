@@ -215,7 +215,11 @@ class Store:
         return registry
 
     def save_registry(self, registry: WorkerRegistry) -> None:
-        """Write the whole registry back. Idempotent by construction.
+        """Write workers, identifiers and processed periods back in one transaction.
+
+        Idempotent by construction. Periods commit with the workers whose
+        last_seen they age, so leaver detection survives a restart even if
+        Store.record_period is never called.
 
         An identifier already stored under another worker raises, and the
         transaction rolls the whole save back. This is the backstop: by then
@@ -265,12 +269,23 @@ class Store:
                         """,
                         (kind, value, worker.worker_id),
                     )
+            for period in registry.periods:
+                self._connection.execute(
+                    "INSERT INTO roster_periods (as_of, processed_at) VALUES (?, ?)"
+                    " ON CONFLICT(as_of) DO NOTHING",
+                    (period.isoformat(), _now()),
+                )
 
     # -- roster periods ---------------------------------------------------
 
     def record_period(self, as_of: date, source_path: str | None = None,
                       digest: str | None = None) -> bool:
-        """Record a processed roster period. False if it was already recorded."""
+        """Record a processed roster period with its file hash and path. False if already recorded.
+
+        Call it before save_registry for that period. save_registry writes the
+        period row too, without the file metadata, and an existing row is left
+        untouched: a later call here returns False and stores no hash or path.
+        """
         with self._connection:
             cursor = self._connection.execute(
                 "INSERT INTO roster_periods (as_of, file_hash, source_path, processed_at)"
