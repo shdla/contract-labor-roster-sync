@@ -224,19 +224,23 @@ roster_week2.xlsx  header row 3  8 rows  rerun=False
 4. Access provisioning
 ====================================================================
   first run:  {'activated': 7, 'deactivated': 1, 'unchanged': 0, 'failed': 0}   api calls: 7
-  rerun:      {'activated': 0, 'deactivated': 0, 'unchanged': 8, 'failed': 0}   api calls: 7
+  rerun:      {'activated': 0, 'deactivated': 0, 'unchanged': 8, 'failed': 0}   api calls: 0
 
 ====================================================================
 5. Three-way hours reconciliation
 ====================================================================
   {'workers': 2, 'clean': 1, 'disputed': 1, 'agency_hours': 32.0, 'scanner_hours': 30.0, 'over_reported_hours': 2.0, 'unresolved_rows': 1}
 
-  Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   Alicia Fontenot        agency 16.00  scanner 14.00  site  6.03
       2024-07-15  present but not badged at site  (agency 8.0, scanner 8.0, site 0.0)
       2024-07-16  agency over-reported  (agency 8.0, scanner 6.0, site 6.03)
+  Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   UNRESOLVED [site] badge BADGE-UNKNOWN not mapped
 ```
+
+The single `deactivated` on the first run is a blocked worker who was never
+provisioned, so the state is recorded without a request, which is why eight
+transitions make seven calls.
 
 ## Spreadsheet defects handled
 

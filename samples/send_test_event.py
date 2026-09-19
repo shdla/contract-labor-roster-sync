@@ -29,12 +29,12 @@ from roster_sync.models import Worker  # noqa: E402
 from roster_sync.normalize import normalize_name  # noqa: E402
 
 WORKERS = {
-    1: ("Priya", "Raghunathan", "+18325550199", "buckhoist_operator"),
+    1: ("Priya", "Raghunathan", "+18325550227", "buckhoist_operator"),
     2: ("Tomas", "Ruiz", "+18325550214", "material_handler"),
-    3: ("Jerome", "Baptiste", "+18325550277", "forklift_operator"),
+    3: ("Jerome", "Baptiste", "+18325550299", "forklift_operator"),
     4: ("Alicia", "Fontenot", "+18325550288", "pod_production"),
-    5: ("Marcus", "Webb", "+18325550301", "material_handler"),
-    6: ("Danielle", "Okonkwo", "+18325550266", "pod_production"),
+    5: ("Marcus", "Webb", "+18325550142", "material_handler"),
+    6: ("Danielle", "Okonkwo", "+18325550178", "pod_production"),
 }
 
 
