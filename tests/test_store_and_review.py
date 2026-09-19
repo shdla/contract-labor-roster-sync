@@ -7,7 +7,7 @@ from roster_sync.identity import WorkerRegistry
 from roster_sync.models import RosterRow
 from roster_sync.normalize import normalize_email, normalize_name, normalize_phone
 from roster_sync.review import ReviewResolutionError, confirm, reject
-from roster_sync.store import Store
+from roster_sync.store import Store, file_hash
 
 WEEK_1 = date(2024, 7, 8)
 WEEK_2 = date(2024, 7, 15)
@@ -57,8 +57,8 @@ def test_registry_survives_a_restart_with_identifiers_intact(tmp_path):
         assert registry.workers[0].worker_id == webb_id
 
 
-def test_reprocessing_the_same_file_does_not_deactivate_anyone(store):
-    registry = store.load_registry()
+def test_reprocessing_the_same_file_does_not_deactivate_anyone():
+    registry = WorkerRegistry()
     present = row("Tomas", "Ruiz", "8325550214", "tr@example.com")
     absent = row("Ray", "Villanueva", "832.555.0193", "rv@example.com")
 
@@ -75,11 +75,42 @@ def test_reprocessing_the_same_file_does_not_deactivate_anyone(store):
     assert third.summary()["leavers"] == 1
 
 
-def test_period_hash_detects_a_changed_file_for_the_same_week(tmp_path, store):
+def test_retried_job_in_a_new_process_does_not_deactivate_anyone(tmp_path):
+    path = tmp_path / "roster.db"
+    present = row("Tomas", "Ruiz", "8325550214", "tr@example.com")
+    absent = row("Ray", "Villanueva", "832.555.0193", "rv@example.com")
+
+    with Store(path) as week1:
+        registry = week1.load_registry()
+        compute_diff(registry, [present, absent], WEEK_1)
+        week1.record_period(WEEK_1)
+        week1.save_registry(registry)
+
+    with Store(path) as week2:
+        registry = week2.load_registry()
+        compute_diff(registry, [present], WEEK_2)
+        week2.record_period(WEEK_2)
+        week2.save_registry(registry)
+
+    # The week 2 job runs again in a fresh process; all it knows is the database.
+    with Store(path) as retry:
+        registry = retry.load_registry()
+        rerun = compute_diff(registry, [present], WEEK_2)
+        retry.record_period(WEEK_2)
+        retry.save_registry(registry)
+
+        assert rerun.is_rerun is True
+        assert rerun.summary()["leavers"] == 0, "a retry must not age an absent worker"
+
+    with Store(path) as week3:
+        registry = week3.load_registry()
+        third = compute_diff(registry, [present], WEEK_3)
+        assert third.summary()["leavers"] == 1
+
+
+def test_record_period_is_idempotent_and_keeps_the_first_hash(tmp_path, store):
     file_a = tmp_path / "a.txt"
     file_a.write_text("roster contents")
-
-    from roster_sync.store import file_hash
 
     digest = file_hash(file_a)
     assert store.record_period(WEEK_1, str(file_a), digest) is True
@@ -184,28 +215,44 @@ def test_decision_is_attributed_and_survives_a_restart(tmp_path):
         assert "+18325550999" in registry.workers[0].phones
 
 
-def test_confirming_onto_a_worker_who_does_not_own_the_identifier_is_refused(store):
+def flag_the_same_row_in_two_weeks(store):
+    """Two open flags for one question: the review id includes the period."""
     registry = store.load_registry()
-    compute_diff(
-        registry,
-        [
-            row("Chris", "Nguyen", "832.555.0101", "cn1@example.com"),
-            row("Alicia", "Fontenot", "832.555.0288", "af@example.com"),
-        ],
-        WEEK_1,
-    )
+    compute_diff(registry, [row("Curtis", "Delaney", "832.555.0266", "cd@example.com")], WEEK_1)
     store.save_registry(registry)
-    fontenot = next(w for w in registry.workers if w.name.last == "fontenot")
 
-    # A flagged row carrying Nguyen's phone must not be merged into Fontenot.
-    clash = row("Chris", "Nguyen", "832.555.0101", "brand-new@example.com")
-    diff = compute_diff(registry, [clash], WEEK_2)
-    store.save_reviews(diff.review, WEEK_2)
-    open_items = store.open_reviews()
+    ambiguous = row("Curtis", "Delaney", "832.555.0999")
+    flags = []
+    for week in (WEEK_2, WEEK_3):
+        diff = compute_diff(registry, [ambiguous], week)
+        flags += store.save_reviews(diff.review, week)
+    return registry, flags
 
-    if open_items:
-        with pytest.raises(ReviewResolutionError):
-            confirm(store, registry, open_items[0].review_id, fontenot.worker_id, decided_by="a.diaz")
+
+def test_rejecting_a_stale_flag_whose_duplicate_was_confirmed_is_refused(store):
+    registry, (week2_flag, week3_flag) = flag_the_same_row_in_two_weeks(store)
+    assert len(store.open_reviews()) == 2
+    curtis = registry.workers[0]
+
+    confirm(store, registry, week2_flag, curtis.worker_id, decided_by="a.diaz")
+
+    # The phone is Curtis's now. Rejecting would mint a second Curtis holding it.
+    with pytest.raises(ReviewResolutionError):
+        reject(store, registry, week3_flag, decided_by="a.diaz")
+    assert len(registry.workers) == 1
+
+
+def test_confirming_a_stale_flag_whose_duplicate_was_rejected_is_refused(store):
+    registry, (week2_flag, week3_flag) = flag_the_same_row_in_two_weeks(store)
+    assert len(store.open_reviews()) == 2
+    curtis = registry.workers[0]
+
+    reject(store, registry, week2_flag, decided_by="a.diaz")
+
+    # The phone belongs to the second Curtis now. It must not also merge into the first.
+    with pytest.raises(ReviewResolutionError):
+        confirm(store, registry, week3_flag, curtis.worker_id, decided_by="a.diaz")
+    assert "+18325550999" not in curtis.phones
 
 
 def test_unresolved_flag_does_not_age_a_worker_into_a_false_leaver(store):
