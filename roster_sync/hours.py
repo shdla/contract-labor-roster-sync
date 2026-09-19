@@ -71,7 +71,7 @@ def _parse_date(value: str) -> date:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"unrecognised date {value!r}")
+    raise ValueError(f"unrecognized date {value!r}")
 
 
 def _parse_time(day: date, value: str) -> datetime:
@@ -81,7 +81,7 @@ def _parse_time(day: date, value: str) -> datetime:
             return datetime.combine(day, datetime.strptime(text, fmt).time())
         except ValueError:
             continue
-    raise ValueError(f"unrecognised time {value!r}")
+    raise ValueError(f"unrecognized time {value!r}")
 
 
 def read_agency_report(path: str | Path, registry: WorkerRegistry, role_map: dict[str, str] | None = None

@@ -7,15 +7,15 @@ deliveries and getting them there — it says nothing about what happens once
 they arrive.
 
 Delivery is at-least-once (retries can double-send); a deterministic dedup
-id is what makes that safe to replay rather than merely convenient. Per
-design invariant #10, the id is UUIDv5 of (type, subject, period), so
-retrying the same worker/period/event-type produces the same id and the
-receiver can discard the repeat. Signing (HMAC-SHA256 over the raw JSON
-body) lets Workato's webhook trigger — which needs no connection object —
-still verify the sender.
+id is what makes that safe to replay rather than merely convenient. The id
+is a UUIDv5 of (type, subject, period), so retrying the same
+worker/period/event-type produces the same id and the receiver can discard
+the repeat. Signing (HMAC-SHA256 over the raw JSON body) lets Workato's
+webhook trigger — which needs no connection object — still verify the
+sender.
 
-Only worker.joined is emitted today, because Recipe 1 (orientation
-scheduling) is the only consumer built so far. Leaver/changed events are not
+Only worker.joined is emitted today, because the orientation-scheduling
+recipe is the only consumer built so far. Leaver/changed events are not
 invented here; add an event type only once a recipe exists to react to it.
 """
 
@@ -41,7 +41,7 @@ EVENT_ID_NAMESPACE = uuid.UUID("a3f1e2d4-9b6c-4e10-8f2a-6d4c1b9e7f00")
 
 
 def event_id(event_type: str, subject: str, period: date) -> str:
-    """Deterministic id for (type, subject, period) -- design invariant #10."""
+    """Deterministic id for (type, subject, period): same inputs, same id, across processes and reruns."""
     name = f"{event_type}:{subject}:{period.isoformat()}"
     return str(uuid.uuid5(EVENT_ID_NAMESPACE, name))
 

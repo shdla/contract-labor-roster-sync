@@ -161,8 +161,8 @@ def normalize_role(raw: object, role_map: dict[str, str]) -> str | None:
     """Map a free-text role cell onto a canonical role code.
 
     role_map is loaded from config so a new spelling is a config change, not
-    a code change. Unmapped roles return None and are surfaced as exceptions
-    rather than silently defaulting to the least-privileged role.
+    a code change. Unmapped roles return None; nothing is raised. A worker
+    with no mapped role is blocked by the eligibility gate.
     """
     text = _clean(raw)
     if not text:

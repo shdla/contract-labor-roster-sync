@@ -25,7 +25,7 @@ WEEK_1 = [
 
 # Week 2: Webb keeps his number but the agency typo'd his first name.
 # Okonkwo has a new phone and the same email. Villanueva is gone.
-# Two new starters, one of whom shares a surname with nobody.
+# Two new starters; Baptiste has no email.
 WEEK_2 = [
     ["Marcuss", "Webb", "(832) 555-0142", "mwebb@example.com", "Material Handler"],
     ["Danielle", "Okonkwo", "832-555-0301", "dokonkwo@example.com", "Pod Production"],

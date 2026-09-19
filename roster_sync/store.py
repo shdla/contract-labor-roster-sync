@@ -1,10 +1,14 @@
-"""SQLite persistence for the worker registry and the review queue.
+"""SQLite persistence for everything that must survive between runs: workers
+and their identifiers, roster periods, the review queue, credentials, access
+state and the badge map.
 
 State has to survive between runs for three reasons. The registry is only
 useful if this week's file can be compared against last week's population.
 Absence is derived from the set of roster periods already processed, so that
 set must persist. And a review flag a human has resolved must stay resolved,
 or the same question returns every week until people stop reading the queue.
+Credentials, pushed access state and badge ids persist for the same reason,
+because the gate and idempotent provisioning read them.
 
 Storage is deliberately kept behind this module: identity.py and diff.py
 know nothing about it, so the matching logic stays testable in memory.
@@ -152,7 +156,7 @@ class PendingReview:
 
 
 class Store:
-    """A SQLite-backed home for the registry and the review queue."""
+    """A SQLite-backed home for all persisted state."""
 
     def __init__(self, path: str | Path = "roster.db") -> None:
         self.path = str(path)

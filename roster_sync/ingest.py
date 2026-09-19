@@ -1,11 +1,11 @@
 """Reading an agency roster workbook into normalized rows.
 
 Agency spreadsheets are written for humans, not for parsers. They carry a
-title row above the headers, blank spacer rows, merged cells, trailing notes
-below the data, and columns whose headers differ week to week. This module
-locates the header row rather than assuming row 1, maps columns through
-configuration rather than position, and reports what it could not understand
-instead of failing on the first bad cell.
+title row above the headers, blank spacer rows, trailing notes below the
+data, and columns whose headers differ week to week. This module locates the
+header row rather than assuming row 1, maps columns through header aliases
+rather than position, and reports what it could not understand instead of
+failing on the first bad cell.
 """
 
 from __future__ import annotations
@@ -24,7 +24,8 @@ from .normalize import (
 )
 
 # Canonical field -> header spellings seen in the wild. Extending this is a
-# config change; nothing in the parsing logic knows about column order.
+# one-line change here, or pass header_aliases to read_roster; nothing in the
+# parsing logic knows about column order.
 DEFAULT_HEADER_ALIASES: dict[str, list[str]] = {
     "first_name": ["first name", "first", "firstname", "given name", "fname"],
     "last_name": ["last name", "last", "lastname", "surname", "lname"],
@@ -68,7 +69,7 @@ def find_header_row(
 ) -> tuple[int, dict[str, int]]:
     """Locate the header row and map canonical fields to column indices.
 
-    Scores each of the first scan_depth rows by how many recognised headers
+    Scores each of the first scan_depth rows by how many recognized headers
     it contains, and takes the best. A title row scores zero; the real header
     row scores highest.
     """
@@ -86,7 +87,7 @@ def find_header_row(
 
     if best_score == 0:
         raise ValueError(
-            "no recognisable header row in the first "
+            "no recognizable header row in the first "
             f"{scan_depth} rows; check the file or extend the header aliases"
         )
     return best_row, best_map

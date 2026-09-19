@@ -12,7 +12,7 @@ Two outcomes:
 - reject   the row is a different person; a worker is created deliberately
 
 Both are recorded with who decided and when, because deactivating somebody's
-site access on the strength of a judgement call is the kind of thing that
+site access on the strength of a judgment call is the kind of thing that
 gets asked about later.
 """
 

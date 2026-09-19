@@ -1,4 +1,5 @@
-"""Contract labour roster sync — ingest, identity resolution, diffing, persistence."""
+"""Contract labor roster sync: ingest, identity resolution, diffing, persistence,
+review, eligibility, provisioning, hours reconciliation, event emission."""
 
 from .credentials import Credential, CredentialStatus, EligibilityReport, Verdict, build_report, evaluate
 from .diff import compute_diff
