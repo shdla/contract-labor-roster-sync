@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 149 tests
+idempotent sync · three-way data reconciliation · 158 tests
 
 ## Scenario
 
@@ -146,6 +146,11 @@ existing worker keeps the last mapped role.
 **Normalization refuses rather than guesses.** A phone of the wrong length,
 a value of `n/a`, a string that is not email-shaped — all become `None`. A
 wrong normalization silently merges two people; an absent value does not.
+Name cells are checked against a shorter placeholder list than contact
+cells, because `Na` and `X` are placeholders in a phone column and real
+names in a name column, and a generational suffix is dropped only when a
+surname is left without it, so a worker whose last name is `V` is not
+rejected every week.
 
 ## Layout
 
@@ -166,7 +171,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               149 tests covering normalization, matching, diffing,
+tests/               158 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -179,7 +184,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 149 tests
+python -m pytest tests/ -q            # 158 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

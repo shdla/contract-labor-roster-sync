@@ -79,10 +79,27 @@ def test_hyphenated_and_dotted_suffix_last_names_converge(written, plain):
     assert normalize_name("Ray", written).last == normalize_name("Ray", plain).last
 
 
-@pytest.mark.parametrize("first,last", [("", "Webb"), ("Marcus", None), ("n/a", "Webb")])
+@pytest.mark.parametrize("first,last", [
+    ("", "Webb"), ("Marcus", None), ("n/a", "Webb"),
+    ("Marcus", "--"), ("Marcus", "TBD"), ("Unknown", "Webb"), ("Marcus", "null"),
+])
 def test_name_with_a_missing_part_is_none(first, last):
     # A worker is never created with an empty first or last name.
     assert normalize_name(first, last) is None
+
+
+# "na" and "x" are placeholders in a contact cell and real names in a name
+# cell; "v" is a generational suffix only when a surname is left without it.
+@pytest.mark.parametrize("first,last,key", [
+    ("Na", "Li", "li|na"),
+    ("Li", "Na", "na|li"),
+    ("X", "Webb", "webb|x"),
+    ("Marcus", "V", "v|marcus"),
+    ("Marcus", "Webb V", "webb|marcus"),
+])
+def test_short_names_are_not_mistaken_for_placeholders_or_suffixes(first, last, key):
+    name = normalize_name(first, last)
+    assert name is not None and name.key == key
 
 
 def test_name_handles_last_comma_first_in_one_cell():
