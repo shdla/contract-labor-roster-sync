@@ -37,13 +37,23 @@ WEEK_3 = date(2024, 7, 22)
         (8325550142, "+18325550142"),
         ("8325550142.0", "+18325550142"),
         ("832-555-0142 x204", "+18325550142"),
+        ("832-555-0142 ext. 204", "+18325550142"),
+        ("832-555-0142 ext204", "+18325550142"),
+        ("+1 (832) 555-0142", "+18325550142"),
     ],
 )
 def test_phone_formats_converge(raw, expected):
     assert normalize_phone(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["n/a", "", None, "555", "0000000000", "pending"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "n/a", "", None, "555", "0000000000", "pending",
+        # Eleven digits that do not start with the country code: refused, not guessed.
+        "28325550142", "44 832 555 0142",
+    ],
+)
 def test_unusable_phones_are_none(raw):
     assert normalize_phone(raw) is None
 
@@ -61,6 +71,17 @@ def test_name_folding_ignores_case_accents_and_suffixes():
 
     assert normalize_name("José", "Peña") == normalize_name("jose", "pena")
     assert normalize_name("Mary", "O'Brien") == normalize_name("mary", "OBrien")
+
+
+@pytest.mark.parametrize("written,plain", [("Smith-Jones", "Smith Jones"), ("Villanueva Jr.", "Villanueva")])
+def test_hyphenated_and_dotted_suffix_last_names_converge(written, plain):
+    assert normalize_name("Ray", written).last == normalize_name("Ray", plain).last
+
+
+@pytest.mark.parametrize("first,last", [("", "Webb"), ("Marcus", None), ("n/a", "Webb")])
+def test_name_with_a_missing_part_is_none(first, last):
+    # A worker is never created with an empty first or last name.
+    assert normalize_name(first, last) is None
 
 
 def test_name_handles_last_comma_first_in_one_cell():
