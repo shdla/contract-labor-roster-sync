@@ -363,8 +363,11 @@ same joiners and re-emits the same ids. The rerun is the resend path:
 exhausted its retries goes out again when the period is run again, along
 with the ones already delivered, which the receiver discards by id. A worker
 created by rejecting a review flag is created outside any diff, so the
-caller of `reject()` emits `worker_joined_event` for the flag's period, and
-a rerun of that period derives the same id. The receiving recipe
+caller of `reject()` emits `worker_joined_event` for the flag's period. A
+rerun of that period derives the same id only when the row carries no
+identifier another worker holds; otherwise the row is flagged again, the
+rerun lists no joiner for it, and the caller of `reject()` is the only
+emitter, so it retries its own failed send. The receiving recipe
 reacts to that id being new or repeated; nothing about *how* it reacts
 (which lookup table, what the notification says, where the error monitor
 wraps) is decided in Python. That split is deliberate: an agency roster is

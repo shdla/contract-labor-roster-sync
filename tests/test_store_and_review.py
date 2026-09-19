@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 
 from roster_sync.diff import compute_diff
+from roster_sync.events import events_for_diff
 from roster_sync.identity import WorkerRegistry
 from roster_sync.models import MatchConfidence, MatchResult, RosterRow, Worker
 from roster_sync.normalize import normalize_email, normalize_name, normalize_phone
@@ -553,6 +554,12 @@ def test_rejecting_a_row_on_a_shared_phone_creates_the_worker_from_its_own_email
         assert reloaded.get(tomas.worker_id).phones == {"+18325550214"}
         assert reloaded.get(maria.worker_id).emails == {"mr@example.com"}
         assert second.open_reviews() == []
+
+        # A rerun of the flag's period is not a resend path for Maria: her
+        # row is flagged again instead of being derived as a joiner, so the
+        # caller of reject() is the only emitter of her worker.joined.
+        rerun = compute_diff(reloaded, household, WEEK_1)
+        assert [e.subject for e in events_for_diff(rerun)] == [tomas.worker_id]
 
         # The limit of a reject here: while the agency lists the household
         # phone on Maria's row, the phone says Tomas and the email says Maria,

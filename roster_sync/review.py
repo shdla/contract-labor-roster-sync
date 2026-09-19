@@ -42,7 +42,10 @@ class Resolution:
     review.as_of): the worker is created here, never in compute_diff's NEW
     branch, so no diff of that run lists the joiner. first_seen is
     review.as_of, so a rerun of that period derives the same joiner and the
-    same event id, and the receiver deduplicates.
+    same event id, and the receiver deduplicates. That holds only when the
+    row carries no identifier another worker holds. When a reject returns
+    non-empty `changes`, a rerun flags the row again and lists no joiner for
+    it, so the caller is the only emitter and retries its own failed send.
     """
 
     decision: str
