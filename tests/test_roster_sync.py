@@ -1,5 +1,6 @@
 import ast
 import uuid
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -312,6 +313,31 @@ def test_role_change_is_reported_as_a_change():
     worker, changes = second.changed[0]
     assert worker.role == "forklift_operator"
     assert any("role" in c for c in changes)
+
+
+def test_unmapped_role_unsets_the_role_once_and_a_rerun_reports_no_change():
+    registry = WorkerRegistry()
+    compute_diff(registry, [row("Tomas", "Ruiz", "8325550214")], WEEK_1)
+    # read_roster sets the flag; row() builds the RosterRow by hand.
+    relabelled = replace(row("Tomas", "Ruiz", "8325550214", role="Reach Truck Operator"), role_unmapped=True)
+
+    second = compute_diff(registry, [relabelled], WEEK_2)
+    ((worker, changes),) = second.changed
+    assert worker.role is None
+    assert changes == ["role material_handler -> unmapped"]
+
+    rerun = compute_diff(registry, [relabelled], WEEK_2)
+    assert rerun.summary()["changed"] == 0, "the change is recorded once, not on every rerun"
+
+
+def test_empty_role_cell_leaves_the_role_unchanged():
+    registry = WorkerRegistry()
+    compute_diff(registry, [row("Tomas", "Ruiz", "8325550214")], WEEK_1)
+
+    # An omitted cell says nothing about the role; only text the map cannot read does.
+    second = compute_diff(registry, [row("Tomas", "Ruiz", "8325550214", role="")], WEEK_2)
+    assert second.summary()["unchanged"] == 1
+    assert registry.workers[0].role == "material_handler"
 
 
 def test_uncertain_rows_go_to_review_and_provision_nothing():

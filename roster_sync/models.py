@@ -22,6 +22,9 @@ class RosterRow:
     phone: str | None
     email: str | None
     role: str | None
+    # The role cell held text the role map does not know. An empty cell says
+    # nothing about the role; an unreadable one says the stored role may be wrong.
+    role_unmapped: bool = False
 
     @property
     def is_usable(self) -> bool:
@@ -78,7 +81,12 @@ class Worker:
         if row.email and row.email not in self.emails:
             changes.append(f"email added {row.email}")
             self.emails.add(row.email)
-        if row.role and row.role != self.role:
+        if row.role_unmapped and self.role is not None:
+            # The new role's requirements are unknown, so the old role must
+            # not keep clearing the worker. None is what the gate blocks on.
+            changes.append(f"role {self.role} -> unmapped")
+            self.role = None
+        elif row.role and row.role != self.role:
             changes.append(f"role {self.role or 'unset'} -> {row.role}")
             self.role = row.role
         if row.name and row.name != self.name:

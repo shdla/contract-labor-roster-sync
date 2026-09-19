@@ -60,6 +60,9 @@ def main() -> None:
             print(f"\n{path.name}  header row {report.header_row}  "
                   f"{report.rows_read} rows  rerun={diff.is_rerun}")
             print(f"  {diff.summary()}")
+            # Printed per row because the remedy is a config edit: an alias in roles.yaml.
+            for source_row, text in report.unmapped_roles:
+                print(f"    UNMAPPED ROLE row {source_row}  {text!r}")
             for worker in diff.joiners:
                 print(f"    JOINER  {worker.name.display:22} {worker.role}")
             for worker, changes in diff.changed:

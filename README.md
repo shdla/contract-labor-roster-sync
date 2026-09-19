@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 171 tests
+idempotent sync · three-way data reconciliation · 175 tests
 
 ## Scenario
 
@@ -141,8 +141,19 @@ is a change to `config/roles.yaml`, not to code. Header spellings are one
 table in `ingest.py` (`DEFAULT_HEADER_ALIASES`), overridable per call through
 `read_roster`'s `header_aliases` argument. An unrecognized role returns
 `None` rather than defaulting to the least-privileged role, and nothing is
-raised: a new worker with no mapped role is blocked by the gate, and an
-existing worker keeps the last mapped role.
+raised. `read_roster` lists each one in `IngestReport.unmapped_roles` as the
+spreadsheet row and the text the agency wrote; the text is reported for that
+run and never stored. On a roster row that is applied, a role cell the map
+cannot read sets the worker's role to `None` and records the change, for a
+known worker as for a new one, so the gate blocks with `role not mapped`
+whatever credentials the old role had earned. An empty role cell, or a
+placeholder such as `n/a`, leaves the role unchanged. The operational
+consequence is deliberate: when the agency changes how it spells a role,
+every worker on that spelling is blocked, and the next access sync revokes
+the badge, until the alias is added to `config/roles.yaml` and the file is
+processed again. A row held for review applies nothing, and the marker is not
+stored with the flag, so a confirmed flag leaves the role alone until the
+next file, or a rerun of that one, matches the row on the attached identifier.
 
 **Normalization refuses rather than guesses.** A phone of the wrong length,
 a value of `n/a`, a string that is not email-shaped — all become `None`. A
@@ -172,7 +183,7 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               171 tests covering normalization, matching, diffing,
+tests/               175 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -185,7 +196,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 171 tests
+python -m pytest tests/ -q            # 175 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 

@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 
 from .models import RosterRow
 from .normalize import (
+    PLACEHOLDER_TOKENS,
     normalize_email,
     normalize_name,
     normalize_phone,
@@ -49,6 +50,9 @@ class IngestReport:
     column_map: dict[str, int]
     rows_read: int
     rows_blank: int
+    # (source_row, text as written) for each role cell the role map could not
+    # read. Reported for this run only; the text is never stored.
+    unmapped_roles: list[tuple[int, str]]
 
 
 def _cell_text(value: object) -> str:
@@ -118,6 +122,7 @@ def read_roster(
         )
 
     rows: list[RosterRow] = []
+    unmapped_roles: list[tuple[int, str]] = []
     blank = 0
 
     for offset, raw_row in enumerate(grid[header_row + 1:], start=header_row + 2):
@@ -131,13 +136,22 @@ def read_roster(
                 return None
             return raw_row[column]
 
+        role_cell = value("role")
+        role = normalize_role(role_cell, role_map)
+        # A placeholder counts as an empty cell, as it does in normalize_role:
+        # it names no role, and no alias in the role map would fix it.
+        role_unmapped = role is None and _cell_text(role_cell) not in PLACEHOLDER_TOKENS
+        if role_unmapped:
+            unmapped_roles.append((offset, str(role_cell).strip()))
+
         rows.append(
             RosterRow(
                 source_row=offset,
                 name=normalize_name(value("first_name"), value("last_name")),
                 phone=normalize_phone(value("phone")),
                 email=normalize_email(value("email")),
-                role=normalize_role(value("role"), role_map),
+                role=role,
+                role_unmapped=role_unmapped,
             )
         )
 
@@ -148,5 +162,6 @@ def read_roster(
         column_map=column_map,
         rows_read=len(rows),
         rows_blank=blank,
+        unmapped_roles=unmapped_roles,
     )
     return rows, report
