@@ -252,10 +252,11 @@ class Store:
         transaction rolls the whole save back. This is the backstop: by then
         the in-memory registry is already wrong, so review.py refuses first.
 
-        transfers are the identifiers review.confirm moved. Each stored row
-        is deleted and logged here, in the transaction that inserts it under
-        its new owner. Nothing else deletes an identifier row, so a move
-        nobody named still raises.
+        transfers are the identifiers a review decision moved. Each stored
+        row is deleted and logged here, in the transaction that inserts it
+        under its new owner. Nothing else deletes an identifier row, so a
+        move nobody named still raises. The log is written after the worker
+        rows because a reject can transfer to a worker created in this save.
         """
         with self._connection:
             for moved in transfers:
@@ -263,15 +264,6 @@ class Store:
                 self._connection.execute(
                     "DELETE FROM worker_identifiers WHERE kind = ? AND value = ? AND worker_id = ?",
                     (moved.kind, moved.value, moved.from_worker_id),
-                )
-                self._connection.execute(
-                    """
-                    INSERT INTO identifier_transfers
-                        (review_id, kind, value, from_worker_id, to_worker_id, transferred_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (moved.review_id, moved.kind, moved.value,
-                     moved.from_worker_id, moved.to_worker_id, _now()),
                 )
             for worker in registry.workers:
                 self._connection.execute(
@@ -316,6 +308,16 @@ class Store:
                         """,
                         (kind, value, worker.worker_id),
                     )
+            for moved in transfers:
+                self._connection.execute(
+                    """
+                    INSERT INTO identifier_transfers
+                        (review_id, kind, value, from_worker_id, to_worker_id, transferred_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (moved.review_id, moved.kind, moved.value,
+                     moved.from_worker_id, moved.to_worker_id, _now()),
+                )
             for period in registry.periods:
                 self._connection.execute(
                     "INSERT INTO roster_periods (as_of, processed_at) VALUES (?, ?)"

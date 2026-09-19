@@ -600,6 +600,61 @@ def test_rejecting_a_row_whose_every_identifier_is_held_names_the_holder_and_the
     assert [r.review_id for r in store.open_reviews()] == [review_id]
 
 
+def test_rejecting_with_transfer_gives_a_recycled_phone_to_the_new_person(tmp_path):
+    path = tmp_path / "roster.db"
+    newcomer = row("Ray", "Villanueva", "832.555.0288")  # no email: the phone is all he has
+    with Store(path) as first:
+        registry = first.load_registry()
+        compute_diff(registry, [row("Alicia", "Fontenot", "832.555.0288", "af@example.com")], WEEK_1)
+        first.save_registry(registry)
+        (fontenot,) = registry.workers
+
+        # Fontenot has left, and the carrier reissued her number to a new hire.
+        diff = compute_diff(registry, [newcomer], WEEK_2)
+        (review_id,) = first.save_reviews(diff.review, WEEK_2)
+
+        with pytest.raises(ReviewResolutionError, match=r"reject with transfer=True only if it has left"):
+            reject(first, registry, review_id, decided_by="a.diaz")
+
+        resolution = reject(first, registry, review_id, decided_by="a.diaz", transfer=True)
+
+        villanueva = resolution.worker
+        assert villanueva.worker_id != fontenot.worker_id
+        assert resolution.changes == ["phone +18325550288 transferred from Alicia Fontenot"]
+        assert fontenot.phones == set()
+        assert registry.owners_of(newcomer) == [villanueva]
+
+    with Store(path) as second:
+        reloaded = second.load_registry()
+        holders = [w.worker_id for w in reloaded.workers if "+18325550288" in w.phones]
+        assert holders == [villanueva.worker_id]
+        assert reloaded.get(fontenot.worker_id).emails == {"af@example.com"}, "only the row's identifier moves"
+        assert second.transfers_for(review_id) == [IdentifierTransfer(
+            review_id, "phone", "+18325550288", fontenot.worker_id, villanueva.worker_id)]
+
+        # The rerun is a resend path again: the row resolves to him, first seen that period.
+        rerun = compute_diff(reloaded, [newcomer], WEEK_2)
+        assert [e.subject for e in events_for_diff(rerun)] == [villanueva.worker_id]
+
+        # Invariant 6 across a restart, and the queue stays clear.
+        third = compute_diff(reloaded, [newcomer], WEEK_3)
+        assert third.summary()["review"] == 0
+        assert third.unchanged == [reloaded.get(villanueva.worker_id)]
+
+
+def test_rejecting_with_transfer_moves_nothing_when_nobody_holds_the_identifiers(store):
+    registry = store.load_registry()
+    compute_diff(registry, [row("Marcus", "Webb", "832.555.0142")], WEEK_1)
+    diff = compute_diff(registry, [row("Marcus", "Webb", "832.555.0999")], WEEK_2)  # name-only match
+    (review_id,) = store.save_reviews(diff.review, WEEK_2)
+
+    resolution = reject(store, registry, review_id, decided_by="a.diaz", transfer=True)
+
+    assert resolution.changes == []
+    assert store.transfers_for(review_id) == []
+    assert len(registry.workers) == 2
+
+
 def test_store_refuses_to_write_one_identifier_under_two_workers(store):
     # The backstop under the review guard: a registry that reached double ownership some other way.
     registry = WorkerRegistry()

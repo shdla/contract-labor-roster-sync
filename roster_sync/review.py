@@ -17,8 +17,10 @@ somebody else only with transfer=True: the reviewer states that the
 identifier has left its holder (a recycled number), and it is taken from that
 worker, given to the confirmed one, and the move is recorded against the
 review. Rejecting such a flag creates the worker from the identifiers on the
-row that nobody holds, and is refused when there are none. Moving an
-identifier between workers is never done implicitly here.
+row that nobody holds, and is refused when there are none, unless the
+reviewer passes transfer=True there too: a new person on a recycled number
+who has no other identifier. Moving an identifier between workers is never
+done implicitly here.
 
 Both are recorded with who decided and when, because deactivating somebody's
 site access on the strength of a judgment call is the kind of thing that
@@ -43,9 +45,11 @@ class Resolution:
     branch, so no diff of that run lists the joiner. first_seen is
     review.as_of, so a rerun of that period derives the same joiner and the
     same event id, and the receiver deduplicates. That holds only when the
-    row carries no identifier another worker holds. When a reject returns
-    non-empty `changes`, a rerun flags the row again and lists no joiner for
-    it, so the caller is the only emitter and retries its own failed send.
+    row carries no identifier another worker still holds. When a reject
+    leaves an identifier with its holder (`changes` says "left with"), a
+    rerun flags the row again and lists no joiner for it, so the caller is
+    the only emitter and retries its own failed send. A reject with
+    transfer=True leaves nothing behind, so the rerun derives the joiner.
     """
 
     decision: str
@@ -106,6 +110,8 @@ def reject(
     registry: WorkerRegistry,
     review_id: str,
     decided_by: str,
+    *,
+    transfer: bool = False,
 ) -> Resolution:
     """Treat a flagged row as a distinct person and create the worker.
 
@@ -118,10 +124,26 @@ def reject(
     The person is onboarded, but the flag can return: while the agency keeps
     the held identifier on this row, the row carries two strong signals that
     point at two workers, and that always escalates.
+
+    transfer=True is the reviewer stating that the held identifier has left
+    its holder (a recycled number). It is taken from that worker and the new
+    worker is created from the whole row, as confirm does for an existing one.
     """
     review = _load_open(store, review_id)
 
     holders = registry.owners_of(review.row)
+    if transfer:
+        # Released before create(), so the identifier never has two holders in memory.
+        released = [(holder, kind, value) for holder in holders
+                    for kind, value in registry.release(holder, review.row)]
+        worker = registry.create(review.row, review.as_of)
+        transfers = [IdentifierTransfer(review_id, kind, value, holder.worker_id, worker.worker_id)
+                     for holder, kind, value in released]
+        store.save_registry(registry, transfers)
+        store.record_decision(review_id, "rejected", worker.worker_id, decided_by)
+        moved = [f"{kind} {value} transferred from {holder.name.display}" for holder, kind, value in released]
+        return Resolution("rejected", worker, moved)
+
     held = {value for w in holders for value in w.phones | w.emails}
     row = replace(
         review.row,
@@ -132,7 +154,7 @@ def reject(
         raise ReviewResolutionError(
             f"{_held_identifier(review, holders[0])} already belongs to "
             f"{holders[0].name.display} and the row carries no other identifier; "
-            f"obtain one from the agency"
+            f"obtain one from the agency, or reject with transfer=True only if it has left that worker"
         )
 
     worker = registry.create(row, review.as_of)

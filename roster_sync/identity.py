@@ -200,9 +200,9 @@ class WorkerRegistry:
         """Take the row's phone and email off a worker who holds them. Returns the (kind, value) pairs.
 
         The only way an identifier leaves a worker, and only review.confirm
-        calls it, on a reviewer's explicit transfer. The set and the index
-        change together, so the identifier has no owner until apply() gives
-        it one, and never two.
+        and review.reject call it, on a reviewer's explicit transfer. The set
+        and the index change together, so the identifier has no owner until
+        apply() or create() gives it one, and never two.
         """
         released: list[tuple[str, str]] = []
         if row.phone in worker.phones:

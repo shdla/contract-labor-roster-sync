@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 198 tests
+idempotent sync · three-way data reconciliation · 200 tests
 
 ## Scenario
 
@@ -62,7 +62,8 @@ name-only match is returned as `WEAK_NAME` and routed to human review rather
 than applied. Merging two people is a materially worse outcome than carrying
 a duplicate for a day. Two limits are known. One identifier has one owner, so
 a row on a shared phone with no identifier of its own cannot be onboarded
-until the agency supplies one. And a near name reads as a typo: `Mario Lopez`
+until the agency supplies one; a recycled number is different, and the
+reviewer can move it (below). And a near name reads as a typo: `Mario Lopez`
 on Maria Lopez's phone is one edit away and is applied, unless both rows are
 in the same file, where the second goes to review.
 
@@ -99,7 +100,9 @@ week and never reaches the queue again. Rejecting creates a second worker
 deliberately, from the identifiers on the row that nobody else holds, with
 the same effect. An identifier somebody already holds, a household phone or
 an agency dispatch address, stays with that worker, and a reject with nothing
-left to create the worker from is refused. One limit is known: while the
+left to create the worker from is refused, unless the reviewer states that
+the identifier has left its holder, `reject(..., transfer=True)`: a new hire
+on a recycled number with no email. One limit is known: while the
 agency keeps a held identifier on the new worker's row, the row's phone and
 email point at two workers, so it escalates again each week. Both workers
 count as seen and neither is changed; the remedy is the agency's file, not a
@@ -154,10 +157,11 @@ at one worker. An attempt to merge a flagged row onto a worker who does not
 own its identifier is refused rather than silently splitting a person across
 two records. A recycled number is the case where the move is right: the
 previous holder has left and the carrier has reissued the number. The
-reviewer says so explicitly, `confirm(..., transfer=True)`, and the identifier
-is taken from the previous holder, deleted and re-inserted under the
-confirmed worker in one transaction, and logged in `identifier_transfers`
-against the review that authorized it. Nothing moves an identifier on its
+reviewer says so explicitly, `confirm(..., transfer=True)` for a known worker
+or `reject(..., transfer=True)` for a new one, and the identifier is taken
+from the previous holder, deleted and re-inserted under its new owner in one
+transaction, and logged in `identifier_transfers` against the review that
+authorized it. Nothing moves an identifier on its
 own.
 
 **Returning workers are not new hires.** A rolled-off worker who reappears
@@ -212,7 +216,7 @@ config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
 docs/screenshots/    the companion Workato recipe: canvas, jobs, lookup tables
-tests/               198 tests covering normalization, matching, diffing,
+tests/               200 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -225,7 +229,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 198 tests
+python -m pytest tests/ -q            # 200 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
@@ -368,7 +372,7 @@ with the ones already delivered, which the receiver discards by id. A worker
 created by rejecting a review flag is created outside any diff, so the
 caller of `reject()` emits `worker_joined_event` for the flag's period. A
 rerun of that period derives the same id only when the row carries no
-identifier another worker holds; otherwise the row is flagged again, the
+identifier another worker still holds; otherwise the row is flagged again, the
 rerun lists no joiner for it, and the caller of `reject()` is the only
 emitter, so it retries its own failed send. The receiving recipe
 reacts to that id being new or repeated; nothing about *how* it reacts
