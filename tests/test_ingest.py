@@ -1,15 +1,20 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
 import yaml
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
+from roster_sync.credentials import Credential, evaluate
+from roster_sync.diff import compute_diff
+from roster_sync.identity import WorkerRegistry
 from roster_sync.ingest import DEFAULT_HEADER_ALIASES, find_header_row, read_roster
 
 # Resolved from this file, not the cwd, so the suite runs from any directory.
 ROOT = Path(__file__).resolve().parent.parent
 with open(ROOT / "config" / "roles.yaml") as handle:
-    ROLE_MAP = yaml.safe_load(handle)["aliases"]
+    CONFIG = yaml.safe_load(handle)
+ROLE_MAP, REQUIREMENTS = CONFIG["aliases"], CONFIG["requirements"]
 
 HEADERS = ("First Name", "Last Name", "Phone", "Email", "Role")
 
@@ -121,3 +126,92 @@ def test_custom_header_aliases_replace_the_defaults(tmp_path):
     rows, report = read_roster(path, ROLE_MAP, header_aliases=aliases)
     assert report.column_map == {"first_name": 0, "last_name": 1, "phone": 2}
     assert rows[0].is_usable and rows[0].phone == "+18325550142"
+
+
+# -- a role the role map cannot read --------------------------------------
+
+
+def test_unmapped_role_text_is_reported_with_its_row_and_the_row_flagged(tmp_path):
+    path = write_workbook(tmp_path / "roster.xlsx", [
+        HEADERS,
+        ["Marcus", "Webb", "(832) 555-0142", "", "Material Handler"],
+        ["Tomas", "Ruiz", "8325550214", "", "Reach Truck Operator"],  # Excel row 3
+        ["Priya", "Raghunathan", "8325550227", "", None],
+        ["Curtis", "Delaney", "8325550266", "", "TBD"],
+    ])
+    rows, report = read_roster(path, ROLE_MAP)
+    assert report.unmapped_roles == [(3, "Reach Truck Operator")]
+    # An empty cell and a placeholder name no role, so neither is a relabel.
+    assert [r.role_unmapped for r in rows] == [False, True, False, False]
+
+
+def test_known_worker_relabelled_with_an_unmapped_role_is_blocked(tmp_path):
+    """The old role used to stay, so the gate kept clearing him on requirements that may no longer apply."""
+    week_1, week_2 = date(2024, 7, 8), date(2024, 7, 15)
+
+    def roster(name, role, role_map=ROLE_MAP):
+        grid = [HEADERS, ["Tomas", "Ruiz", "8325550214", "truiz@example.com", role]]
+        return read_roster(write_workbook(tmp_path / name, grid), role_map)[0]
+
+    registry = WorkerRegistry()
+    compute_diff(registry, roster("week1.xlsx", "Material Handler"), week_1)
+    second = compute_diff(registry, roster("week2.xlsx", "Reach Truck Operator"), week_2)
+
+    ((worker, changes),) = second.changed
+    assert changes == ["role material_handler -> unmapped"]
+
+    held = [Credential(worker.worker_id, kind, week_1) for kind in REQUIREMENTS["material_handler"]]
+    verdict = evaluate(worker, held, REQUIREMENTS, week_2)
+    assert not verdict.cleared, "a full set of material handler credentials must not clear an unknown role"
+    assert verdict.reason == "role not mapped; requirements unknown"
+
+    # The remedy is a config change: with the alias added, the same file gives him a role again.
+    aliased = {**ROLE_MAP, "reach truck operator": "forklift_operator"}
+    compute_diff(registry, roster("week2.xlsx", "Reach Truck Operator", aliased), week_2)
+    assert worker.role == "forklift_operator"
+
+
+# -- a header the aliases cannot read -------------------------------------
+
+RENAMED_NAME_HEADERS = [
+    ["Employee First Name", "Employee Last Name", "Phone", "Email", "Role"],
+    ["Marcus", "Webb", "(832) 555-0142", "mwebb@example.com", "Material Handler"],
+]
+
+
+def test_unrecognized_name_headers_raise_and_the_message_names_them(tmp_path):
+    """Phone, email and role alone used to pass: every row rejected, the period still recorded."""
+    path = write_workbook(tmp_path / "roster.xlsx", RENAMED_NAME_HEADERS)
+    with pytest.raises(ValueError) as raised:
+        read_roster(path, ROLE_MAP)
+    message = str(raised.value)
+    assert "first_name" in message and "last_name" in message
+    assert "Employee First Name" in message and "Employee Last Name" in message
+
+
+def test_no_recognized_contact_header_raises(tmp_path):
+    """Without a phone or an email column no row can ever be usable."""
+    path = write_workbook(tmp_path / "roster.xlsx", [
+        ["First Name", "Last Name", "Phone #", "E-Mail Address", "Role"],
+        ["Marcus", "Webb", "(832) 555-0142", "mwebb@example.com", "Material Handler"],
+    ])
+    with pytest.raises(ValueError, match="phone or email") as raised:
+        read_roster(path, ROLE_MAP)
+    assert "Phone #" in str(raised.value) and "E-Mail Address" in str(raised.value)
+
+
+@pytest.mark.parametrize("grid", [RENAMED_NAME_HEADERS, [["Placement Roster"]]], ids=["missing-column", "no-header"])
+def test_a_refused_file_is_closed_before_the_raise(tmp_path, monkeypatch, grid):
+    path = write_workbook(tmp_path / "roster.xlsx", grid)
+    closed = []
+
+    def spy(*args, **kwargs):
+        workbook = load_workbook(*args, **kwargs)
+        real_close = workbook.close
+        monkeypatch.setattr(workbook, "close", lambda: (closed.append(True), real_close()))
+        return workbook
+
+    monkeypatch.setattr("roster_sync.ingest.load_workbook", spy)
+    with pytest.raises(ValueError):
+        read_roster(path, ROLE_MAP)
+    assert closed == [True]

@@ -11,6 +11,15 @@ Two outcomes:
 - confirm  the row belongs to an existing worker; identifiers are merged in
 - reject   the row is a different person; a worker is created deliberately
 
+Neither outcome may give an identifier a second owner. A flag whose phone or
+email another worker already holds is confirmed onto that holder, or onto
+somebody else only with transfer=True: the reviewer states that the
+identifier has left its holder (a recycled number), and it is taken from that
+worker, given to the confirmed one, and the move is recorded against the
+review. Rejecting such a flag creates the worker from the identifiers on the
+row that nobody holds, and is refused when there are none. Moving an
+identifier between workers is never done implicitly here.
+
 Both are recorded with who decided and when, because deactivating somebody's
 site access on the strength of a judgment call is the kind of thing that
 gets asked about later.
@@ -18,15 +27,27 @@ gets asked about later.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .identity import WorkerRegistry
 from .models import MatchConfidence, MatchResult, Worker
-from .store import PendingReview, Store
+from .store import IdentifierTransfer, PendingReview, Store
 
 
 @dataclass
 class Resolution:
+    """What a decision did, returned to the caller.
+
+    After a reject the caller emits worker_joined_event(resolution.worker,
+    review.as_of): the worker is created here, never in compute_diff's NEW
+    branch, so no diff of that run lists the joiner. first_seen is
+    review.as_of, so a rerun of that period derives the same joiner and the
+    same event id, and the receiver deduplicates. That holds only when the
+    row carries no identifier another worker holds. When a reject returns
+    non-empty `changes`, a rerun flags the row again and lists no joiner for
+    it, so the caller is the only emitter and retries its own failed send.
+    """
+
     decision: str
     worker: Worker
     changes: list[str]
@@ -42,24 +63,40 @@ def confirm(
     review_id: str,
     worker_id: str,
     decided_by: str,
+    *,
+    transfer: bool = False,
 ) -> Resolution:
-    """Attach a flagged row to an existing worker and persist the decision."""
+    """Attach a flagged row to an existing worker and persist the decision.
+
+    transfer=True takes the row's phone or email from any other worker who
+    holds it. It is a separate argument so that a confirm alone can never
+    cost somebody else an identifier.
+    """
     review = _load_open(store, review_id)
     worker = registry.get(worker_id)
     if worker is None:
         raise ReviewResolutionError(f"no worker {worker_id}")
 
-    conflict = _identifier_owner(registry, review, exclude=worker_id)
-    if conflict is not None:
+    holders = [w for w in registry.owners_of(review.row) if w.worker_id != worker_id]
+    if holders and not transfer:
         raise ReviewResolutionError(
-            f"{review.row.phone or review.row.email} already belongs to "
-            f"{conflict.name.display}; resolve that worker first"
+            f"{_held_identifier(review, holders[0])} already belongs to "
+            f"{holders[0].name.display}; confirm with transfer=True only if it has left that worker"
         )
+    # Released before apply(), so the identifier never has two holders in memory.
+    transfers = [
+        IdentifierTransfer(review_id, kind, value, holder.worker_id, worker_id)
+        for holder in holders
+        for kind, value in registry.release(holder, review.row)
+    ]
 
     result = MatchResult(row=review.row, confidence=MatchConfidence.WEAK_NAME, worker=worker)
-    changes = registry.apply(result, review.as_of)
+    changes = [
+        f"{t.kind} {t.value} transferred from {registry.get(t.from_worker_id).name.display}"
+        for t in transfers
+    ] + registry.apply(result, review.as_of)
 
-    store.save_registry(registry)
+    store.save_registry(registry, transfers)
     store.record_decision(review_id, "confirmed", worker.worker_id, decided_by)
     return Resolution("confirmed", worker, changes)
 
@@ -70,38 +107,53 @@ def reject(
     review_id: str,
     decided_by: str,
 ) -> Resolution:
-    """Treat a flagged row as a distinct person and create the worker."""
+    """Treat a flagged row as a distinct person and create the worker.
+
+    A phone or email somebody already holds stays with them: a household
+    phone or an agency dispatch address identifies its first holder and
+    nobody else. The worker is created from what is left, and with nothing
+    left there is no way to recognize this person next week, so the reject
+    is refused.
+
+    The person is onboarded, but the flag can return: while the agency keeps
+    the held identifier on this row, the row carries two strong signals that
+    point at two workers, and that always escalates.
+    """
     review = _load_open(store, review_id)
 
-    conflict = _identifier_owner(registry, review, exclude=None)
-    if conflict is not None:
+    holders = registry.owners_of(review.row)
+    held = {value for w in holders for value in w.phones | w.emails}
+    row = replace(
+        review.row,
+        phone=None if review.row.phone in held else review.row.phone,
+        email=None if review.row.email in held else review.row.email,
+    )
+    if not row.is_usable:
         raise ReviewResolutionError(
-            f"{review.row.phone or review.row.email} already belongs to "
-            f"{conflict.name.display}; this row cannot be a new person"
+            f"{_held_identifier(review, holders[0])} already belongs to "
+            f"{holders[0].name.display} and the row carries no other identifier; "
+            f"obtain one from the agency"
         )
 
-    worker = registry.create(review.row, review.as_of)
+    worker = registry.create(row, review.as_of)
     store.save_registry(registry)
     store.record_decision(review_id, "rejected", worker.worker_id, decided_by)
-    return Resolution("rejected", worker, [])
+    left = [f"{_held_identifier(review, w)} left with {w.name.display}" for w in holders]
+    return Resolution("rejected", worker, left)
 
 
 def _load_open(store: Store, review_id: str) -> PendingReview:
+    """Load a flag that is still undecided. A second decision would overwrite who made the first."""
     review = store.get_review(review_id)
     if review is None:
         raise ReviewResolutionError(f"no review {review_id}")
+    if review.decision is not None:
+        raise ReviewResolutionError(f"review {review_id} already {review.decision}")
     return review
 
 
-def _identifier_owner(
-    registry: WorkerRegistry, review: PendingReview, exclude: str | None
-) -> Worker | None:
-    """Find a worker already holding this row's phone or email."""
-    probe = registry.match(review.row)
-    if probe.worker is None:
-        return None
-    if probe.confidence not in (MatchConfidence.STRONG_PHONE, MatchConfidence.STRONG_EMAIL):
-        return None
-    if exclude is not None and probe.worker.worker_id == exclude:
-        return None
-    return probe.worker
+def _held_identifier(review: PendingReview, owner: Worker) -> str:
+    """The identifier on the row that `owner` holds, with its kind, so a message names the right one."""
+    if review.row.phone in owner.phones:
+        return f"phone {review.row.phone}"
+    return f"email {review.row.email}"

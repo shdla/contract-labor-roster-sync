@@ -22,6 +22,9 @@ class RosterRow:
     phone: str | None
     email: str | None
     role: str | None
+    # The role cell held text the role map does not know. An empty cell says
+    # nothing about the role; an unreadable one says the stored role may be wrong.
+    role_unmapped: bool = False
 
     @property
     def is_usable(self) -> bool:
@@ -32,9 +35,13 @@ class RosterRow:
 class MatchConfidence(str, Enum):
     """How a roster row was matched to a known worker.
 
-    STRONG matches are applied automatically. WEAK matches are surfaced for
-    human confirmation and never merged on their own: merging two people is
-    materially worse than carrying a duplicate for a day.
+    A phone or email hit is STRONG only when the row's name is compatible with
+    the stored one (NormalizedName.compatible_with); otherwise it is a
+    CONFLICT. STRONG matches are applied automatically, except a second row in
+    one file that reaches the same worker under a different name (diff.py). WEAK
+    matches are surfaced for human confirmation and never merged on their
+    own: merging two people is materially worse than carrying a duplicate for
+    a day.
     """
 
     NEW = "new"
@@ -76,7 +83,12 @@ class Worker:
         if row.email and row.email not in self.emails:
             changes.append(f"email added {row.email}")
             self.emails.add(row.email)
-        if row.role and row.role != self.role:
+        if row.role_unmapped and self.role is not None:
+            # The new role's requirements are unknown, so the old role must
+            # not keep clearing the worker. None is what the gate blocks on.
+            changes.append(f"role {self.role} -> unmapped")
+            self.role = None
+        elif row.role and row.role != self.role:
             changes.append(f"role {self.role or 'unset'} -> {row.role}")
             self.role = row.role
         if row.name and row.name != self.name:
@@ -85,8 +97,18 @@ class Worker:
 
         if self.first_seen is None:
             self.first_seen = seen_on
-        self.last_seen = seen_on
+        self.mark_seen(seen_on)
         return changes
+
+    def mark_seen(self, seen_on: date) -> None:
+        """Advance last_seen, never backwards. The one definition of a sighting date.
+
+        A backfilled older file, or an older flag confirmed late, would
+        otherwise turn the next single absence into a leaver. diff.py also
+        calls this for the candidates of a flagged row, so last_seen means the
+        last possible sighting, not the last certain one.
+        """
+        self.last_seen = max(self.last_seen or seen_on, seen_on)
 
 
 @dataclass

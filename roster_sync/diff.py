@@ -12,6 +12,14 @@ a counter incremented per run. That distinction matters operationally: a
 counter ages every absent worker again each time the same file is
 reprocessed, so a retried job could deactivate badges for people still on
 site. Deriving it makes a rerun a no-op.
+
+Joiner status is derived the same way: a worker a row resolves to, whose
+first_seen is the period being processed, is a joiner of that period, on the
+first run and on every rerun. A rerun is the only way to resend a
+worker.joined event whose delivery failed, and it can only do that if it
+lists the same joiners. A flagged row resolves to nobody, so a worker
+created by a reject is not listed while the row stays flagged;
+review.Resolution says who emits then.
 """
 
 from __future__ import annotations
@@ -19,7 +27,7 @@ from __future__ import annotations
 from datetime import date
 
 from .identity import WorkerRegistry
-from .models import MatchConfidence, RosterDiff, RosterRow
+from .models import MatchConfidence, MatchResult, RosterDiff, RosterRow
 
 
 def compute_diff(
@@ -53,17 +61,49 @@ def compute_diff(
         if not result.confidence.is_automatic:
             # WEAK_NAME and CONFLICT both wait for a human. The row is not
             # applied, so nothing is provisioned on an uncertain identity.
-            # The worker it probably belongs to still counts as seen, so an
-            # unresolved flag cannot age somebody into a false leaver.
+            # Every worker it may belong to is still marked seen for this
+            # period, so a flagged period never counts as missed in a later
+            # run, answered or not. The protection ends when the row stops
+            # appearing: an ignored queue cannot keep a departed worker's
+            # badge active. seen_ids still guards this run, because on a
+            # backfilled period the later ones already count as missed.
             if result.worker is not None:
+                result.worker.mark_seen(as_of)
                 seen_ids.add(result.worker.worker_id)
             for candidate in result.candidates:
+                candidate.mark_seen(as_of)
                 seen_ids.add(candidate.worker_id)
             diff.review.append(result)
             continue
 
+        if result.worker.worker_id in seen_ids and row.name != result.worker.name:
+            # A roster cannot list one person twice under two names, so the
+            # second row is a second person on a shared identifier, and
+            # applying it would rename the first. match() has already
+            # escalated an incompatible name; what reaches here is a near
+            # one ("Mario" after "Maria") that it read as a typo. The earlier
+            # row already marked the worker seen, so nothing is marked here.
+            diff.review.append(MatchResult(
+                row=row,
+                confidence=MatchConfidence.CONFLICT,
+                worker=result.worker,
+                candidates=[result.worker],
+                note=(
+                    "two rows in this file resolve to the same worker under different "
+                    "names; obtain a distinct identifier from the agency"
+                ),
+            ))
+            continue
+
         changes = registry.apply(result, as_of)
         seen_ids.add(result.worker.worker_id)
+        # Joiner status is derived from first_seen, not from the NEW branch
+        # alone, so a rerun of this period lists the same joiners and
+        # events.py re-emits the same ids. The worker is then in joiners and
+        # also in changed or unchanged. The membership check keeps a row
+        # listed twice in one file from listing its worker twice.
+        if result.worker.first_seen == as_of and result.worker not in diff.joiners:
+            diff.joiners.append(result.worker)
         if changes:
             diff.changed.append((result.worker, changes))
         else:

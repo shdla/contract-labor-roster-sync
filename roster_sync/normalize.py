@@ -12,8 +12,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-# Values agencies put in a cell when they do not have the real thing.
-# Anything matching these is treated as absent, not as a value.
+# Values agencies put in a phone, email or role cell when they do not have
+# the real thing. Anything matching these is treated as absent, not as a value.
 PLACEHOLDER_TOKENS = {
     "",
     "-",
@@ -33,24 +33,34 @@ PLACEHOLDER_TOKENS = {
     "xxx",
 }
 
+# Name cells get a narrower set: "na" and "x" are placeholders in a phone
+# column and real names in a name column, and a rejected name is a worker who
+# is never onboarded.
+NAME_PLACEHOLDER_TOKENS = {"", "-", "--", "n/a", "tbd", "unknown", "null"}
+
 NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 # A constant, not a parameter: the 10- and 11-digit rules in normalize_phone
 # only hold for a one-digit country code.
 COUNTRY_CODE = "1"
 
+# The most single-character edits one name part may differ by and still be
+# read as a typo of the stored one. Two covers a doubled letter, a dropped
+# letter and two letters swapped; a different name is further away than that.
+NAME_TYPO_EDITS = 2
+
 _NON_DIGIT = re.compile(r"\D")
 _MULTI_SPACE = re.compile(r"\s+")
 _EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _clean(raw: object) -> str:
+def _clean(raw: object, placeholders: set[str] = PLACEHOLDER_TOKENS) -> str:
     """Trim, collapse whitespace, and drop placeholder tokens."""
     if raw is None:
         return ""
     text = str(raw).strip()
     text = _MULTI_SPACE.sub(" ", text)
-    if text.lower() in PLACEHOLDER_TOKENS:
+    if text.lower() in placeholders:
         return ""
     return text
 
@@ -120,6 +130,35 @@ class NormalizedName:
     def display(self) -> str:
         return f"{self.first.title()} {self.last.title()}".strip()
 
+    def compatible_with(self, other: NormalizedName) -> bool:
+        """Whether a phone or email match may carry `other` onto this name without a human.
+
+        One part must be identical and the other within NAME_TYPO_EDITS: a
+        typo disturbs a few characters of one part. A whole part changing is a
+        marriage or a relative on a household phone, and the names alone
+        cannot tell those apart, so both go to review.
+        """
+        if self.first == other.first:
+            return _edit_distance(self.last, other.last) <= NAME_TYPO_EDITS
+        if self.last == other.last:
+            return _edit_distance(self.first, other.first) <= NAME_TYPO_EDITS
+        return False
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance: the fewest single-character insertions, deletions and substitutions."""
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current = [i]
+        for j, char_b in enumerate(b, start=1):
+            current.append(min(
+                previous[j] + 1,                        # delete char_a
+                current[j - 1] + 1,                     # insert char_b
+                previous[j - 1] + (char_a != char_b),   # substitute, free when equal
+            ))
+        previous = current
+    return previous[-1]
+
 
 def _fold(text: str) -> str:
     """Lowercase, strip accents, and remove punctuation used in names."""
@@ -137,8 +176,8 @@ def normalize_name(first: object, last: object) -> NormalizedName | None:
     Also handles the common case of a single cell holding "Last, First" that
     was mapped to the first-name column.
     """
-    first_text = _clean(first)
-    last_text = _clean(last)
+    first_text = _clean(first, NAME_PLACEHOLDER_TOKENS)
+    last_text = _clean(last, NAME_PLACEHOLDER_TOKENS)
 
     if first_text and not last_text and "," in first_text:
         last_part, _, first_part = first_text.partition(",")
@@ -148,7 +187,8 @@ def normalize_name(first: object, last: object) -> NormalizedName | None:
     last_folded = _fold(last_text)
 
     # Drop generational suffixes: they appear inconsistently week to week.
-    last_parts = [p for p in last_folded.split() if p not in NAME_SUFFIXES]
+    # Only when another token remains; a lone "V" is the surname, not a suffix.
+    last_parts = [p for p in last_folded.split() if p not in NAME_SUFFIXES] or last_folded.split()
     last_folded = " ".join(last_parts)
 
     # Keep only the first given name; middle names appear intermittently.

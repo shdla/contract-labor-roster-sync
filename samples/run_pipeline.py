@@ -3,8 +3,10 @@
 Run: python samples/run_pipeline.py
 
 Processes two roster files, grants credentials, evaluates eligibility,
-provisions access, then reconciles a pay period across three hours sources.
-Writes to a throwaway database so it can be run repeatedly.
+provisions access, reconciles a pay period across three hours sources, then
+emits each week's worker.joined events and reruns the last week to show the
+same event ids come out. Writes to a throwaway database so it can be run
+repeatedly.
 """
 
 from __future__ import annotations
@@ -19,9 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from roster_sync import (  # noqa: E402
-    Credential, InMemoryProvisioner, Store, build_report, compute_diff,
-    file_hash, read_agency_report, read_punch_log, read_site_feed, read_roster,
-    reconcile, sync_access,
+    Credential, InMemoryEventSender, InMemoryProvisioner, Store, build_report,
+    compute_diff, emit_diff, file_hash, read_agency_report, read_punch_log,
+    read_site_feed, read_roster, reconcile, sync_access,
 )
 from roster_sync.hours import CLEAN  # noqa: E402
 
@@ -46,16 +48,21 @@ def main() -> None:
     with Store(DB) as store:
         rule("1. Roster ingest and identity resolution")
         registry = store.load_registry()
+        weeks = []
         for path, as_of in [(SAMPLES / "roster_week1.xlsx", WEEK_1),
                             (SAMPLES / "roster_week2.xlsx", WEEK_2)]:
             rows, report = read_roster(path, ROLES)
             diff = compute_diff(registry, rows, as_of)
+            weeks.append((rows, diff))
             store.record_period(as_of, str(path), file_hash(path))
             store.save_registry(registry)
             store.save_reviews(diff.review, as_of)
             print(f"\n{path.name}  header row {report.header_row}  "
                   f"{report.rows_read} rows  rerun={diff.is_rerun}")
             print(f"  {diff.summary()}")
+            # Printed per row because the remedy is a config edit: an alias in roles.yaml.
+            for source_row, text in report.unmapped_roles:
+                print(f"    UNMAPPED ROLE row {source_row}  {text!r}")
             for worker in diff.joiners:
                 print(f"    JOINER  {worker.name.display:22} {worker.role}")
             for worker, changes in diff.changed:
@@ -134,6 +141,22 @@ def main() -> None:
                           f"(agency {day.agency}, scanner {day.scanner}, site {day.site})")
         for item in recon.unresolved:
             print(f"  UNRESOLVED [{item.source}] {item.reason}")
+
+        rule("6. Event emission to the iPaaS")
+        # A production run emits a period's events straight after its diff;
+        # the demo holds them until here so each step prints as one block.
+        outcomes = [emit_diff(diff, InMemoryEventSender()) for _, diff in weeks]
+        for (_, diff), outcome in zip(weeks, outcomes):
+            print(f"  {diff.as_of}  rerun={diff.is_rerun!s:<5}  {outcome.summary()}")
+        # A retried job starts from the store, so the rerun does too. It derives
+        # the same joiners, so the same ids go out and the receiver discards
+        # them. The ids are compared and not printed: each one hashes a worker
+        # id that is issued fresh on every demo run.
+        rows, last = weeks[-1]
+        rerun = compute_diff(store.load_registry(), rows, last.as_of)
+        resent = emit_diff(rerun, InMemoryEventSender())
+        print(f"  {rerun.as_of}  rerun={rerun.is_rerun!s:<5}  {resent.summary()}  "
+              f"ids identical on rerun: {resent.sent == outcomes[-1].sent}")
 
     DB.unlink(missing_ok=True)
 

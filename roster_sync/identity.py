@@ -9,7 +9,11 @@ Design rules:
 
 1. Never derive the worker_id from source values. Names and phones change;
    an identifier derived from them changes with them and breaks idempotency.
-2. Auto-merge only on strong, unique signals (phone or email).
+2. Auto-merge only on a strong, unique signal (phone or email), and only
+   when the row's name is compatible with the stored one: one part identical,
+   the other a typo away. A phone is shared or reissued more often than a
+   person changes a whole name, so any other name on a held identifier is
+   escalated.
 3. A name-only match is a suggestion for a human, never an automatic merge.
 4. When a strong signal points at one worker and the name points at another,
    that is a conflict and is escalated rather than resolved by precedence.
@@ -108,6 +112,21 @@ class WorkerRegistry:
                         f"but the name matches a different worker"
                     ),
                 )
+            # A typo is applied; any other name on a known identifier is a
+            # second person (household phone, dispatch address, recycled
+            # number) or a rename only a human can vouch for. The worker rides
+            # on the flag, so the flagged period still counts as a sighting.
+            if not worker.name.compatible_with(row.name):
+                return MatchResult(
+                    row=row,
+                    confidence=MatchConfidence.CONFLICT,
+                    worker=worker,
+                    candidates=[worker],
+                    note=(
+                        f"contact identifier matches {worker.name.display} "
+                        f"but the name is not compatible with it"
+                    ),
+                )
             confidence = MatchConfidence.STRONG_PHONE if phone_hit else MatchConfidence.STRONG_EMAIL
             return MatchResult(row=row, confidence=confidence, worker=worker)
 
@@ -130,6 +149,17 @@ class WorkerRegistry:
             )
 
         return MatchResult(row=row, confidence=MatchConfidence.NEW)
+
+    def owners_of(self, row: RosterRow) -> list[Worker]:
+        """Workers holding this row's phone or email, phone first, each once.
+
+        Ownership is a fact in the indexes. match() cannot answer it: it folds
+        the name in, so an identifier held by a differently named worker comes
+        back as CONFLICT rather than as an owner.
+        """
+        phone_hit = self._by_phone.get(row.phone) if row.phone else None
+        email_hit = self._by_email.get(row.email) if row.email else None
+        return [self._workers[i] for i in dict.fromkeys((phone_hit, email_hit)) if i]
 
     # -- write ------------------------------------------------------------
 
@@ -165,6 +195,25 @@ class WorkerRegistry:
         worker.active = True
         self._index(worker)
         return changes
+
+    def release(self, worker: Worker, row: RosterRow) -> list[tuple[str, str]]:
+        """Take the row's phone and email off a worker who holds them. Returns the (kind, value) pairs.
+
+        The only way an identifier leaves a worker, and only review.confirm
+        calls it, on a reviewer's explicit transfer. The set and the index
+        change together, so the identifier has no owner until apply() gives
+        it one, and never two.
+        """
+        released: list[tuple[str, str]] = []
+        if row.phone in worker.phones:
+            worker.phones.discard(row.phone)
+            self._by_phone.pop(row.phone, None)
+            released.append(("phone", row.phone))
+        if row.email in worker.emails:
+            worker.emails.discard(row.email)
+            self._by_email.pop(row.email, None)
+            released.append(("email", row.email))
+        return released
 
     def deactivate(self, worker: Worker) -> None:
         worker.active = False

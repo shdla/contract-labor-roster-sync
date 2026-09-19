@@ -129,19 +129,34 @@ class FakeResponse:
         return self._body
 
 
+class NotJson(FakeResponse):
+    def json(self):
+        raise ValueError("body is not JSON")
+
+
+def play(script):
+    """Next scripted reply; an exception instance stands for a transport error and is raised."""
+    reply = script.pop(0)
+    if isinstance(reply, Exception):
+        raise reply
+    return reply
+
+
 class FakeSession:
-    def __init__(self, script):
-        self.script, self.requests = list(script), []
+    def __init__(self, script, token_script=()):
+        self.script, self.token_script, self.requests = list(script), list(token_script), []
 
     def post(self, url, **kw):
         self.requests.append(("post", url, kw))
         if url.endswith("/token"):
+            if self.token_script:
+                return play(self.token_script)
             return FakeResponse(200, {"access_token": "tok", "expires_in": 3600})
-        return self.script.pop(0)
+        return play(self.script)
 
     def delete(self, url, **kw):
         self.requests.append(("delete", url, kw))
-        return self.script.pop(0)
+        return play(self.script)
 
 
 def test_http_provisioner_retries_on_429_then_succeeds(populated):
@@ -185,14 +200,80 @@ def test_http_provisioner_gives_up_after_max_attempts(populated):
     session = FakeSession([FakeResponse(503)] * 4)
     prov = HttpProvisioner("https://a/api", OAuthClientCredentials("https://a/token", "i", "s"),
                            session, max_attempts=4, sleep=lambda _: None)
-    with pytest.raises(ProvisioningError):
+    with pytest.raises(ProvisioningError, match="after 4 attempts: status 503"):
         prov.activate(ruiz)
 
 
 def http_provisioner(session, **kw):
+    kw.setdefault("sleep", lambda _: None)
     return HttpProvisioner("https://access.example/api",
                            OAuthClientCredentials("https://access.example/token", "id", "secret"),
-                           session, sleep=lambda _: None, **kw)
+                           session, **kw)
+
+
+def test_http_provisioner_retries_a_transport_error_and_keeps_the_idempotency_key(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([ConnectionError("connection reset"), FakeResponse(201, {"reference": "B-1"})])
+    slept = []
+    assert http_provisioner(session, backoff_seconds=0.5, sleep=slept.append).activate(ruiz) == "B-1"
+    assert slept == [0.5], "a transport error backs off like a 503"
+    grants = [r for r in session.requests if r[1].endswith("/grants")]
+    # The first post may have been applied before the connection dropped; the key is what makes the resend safe.
+    assert [g[2]["headers"].get("Idempotency-Key") for g in grants] == [ruiz.worker_id] * 2
+
+
+def test_http_provisioner_retries_a_transport_error_from_the_token_endpoint(populated):
+    _, _, ruiz, _ = populated
+    session = FakeSession([FakeResponse(201, {"reference": "B-1"})], token_script=[TimeoutError("timed out")])
+    slept = []
+    assert http_provisioner(session, backoff_seconds=0.5, sleep=slept.append).activate(ruiz) == "B-1"
+    assert slept == [0.5]
+    assert sum(1 for r in session.requests if r[1].endswith("/token")) == 2
+
+
+def test_transport_failure_on_one_worker_is_recorded_and_does_not_stop_the_others(populated):
+    store, registry, ruiz, fontenot = populated
+    store.grant_credential(Credential(fontenot.worker_id, "ppe_issued", D1))
+
+    class DownForRuiz(FakeSession):
+        def post(self, url, **kw):
+            if kw.get("json", {}).get("external_id") == ruiz.worker_id:
+                self.requests.append(("post", url, kw))
+                raise ConnectionError("connection reset")
+            return super().post(url, **kw)
+
+    session = DownForRuiz([FakeResponse(201, {"reference": "B-2"})])
+    slept = []
+    report = build_report(registry.workers, store.all_credentials(), REQ, D1)
+    outcome = sync_access(report, store, http_provisioner(session, max_attempts=4, backoff_seconds=0.5,
+                                                          sleep=slept.append))
+
+    assert [wid for wid, _ in outcome.failed] == [ruiz.worker_id]
+    assert "after 4 attempts: ConnectionError" in outcome.failed[0][1]
+    assert slept == [0.5, 1.0, 2.0], "retried with backoff, and no sleep after the last attempt"
+    assert outcome.activated == [fontenot.worker_id], "the worker after the failure is still attempted"
+    assert store.access_state(ruiz.worker_id) == (None, None), "failed push leaves no false state"
+    assert store.access_state(fontenot.worker_id) == ("active", "B-2")
+
+
+def test_a_401_with_no_attempt_left_to_refresh_on_is_a_provisioning_error(populated):
+    _, _, ruiz, _ = populated
+    with pytest.raises(ProvisioningError, match="after 1 attempts: status 401"):
+        http_provisioner(FakeSession([FakeResponse(401)]), max_attempts=1).activate(ruiz)
+
+
+@pytest.mark.parametrize("token_reply", [FakeResponse(200, {"token_type": "bearer"}), NotJson(200)])
+def test_token_reply_without_an_access_token_is_a_provisioning_error(populated, token_reply):
+    _, _, ruiz, _ = populated
+    with pytest.raises(ProvisioningError, match="access_token"):
+        http_provisioner(FakeSession([], token_script=[token_reply])).activate(ruiz)
+
+
+@pytest.mark.parametrize("grant_reply", [FakeResponse(201, {"id": 7}), NotJson(201)])
+def test_grant_reply_without_a_reference_is_a_provisioning_error(populated, grant_reply):
+    _, _, ruiz, _ = populated
+    with pytest.raises(ProvisioningError, match="reference"):
+        http_provisioner(FakeSession([grant_reply])).activate(ruiz)
 
 
 def test_http_deactivate_deletes_by_external_ref_and_accepts_404(populated):
@@ -264,6 +345,27 @@ def test_three_way_under_reported_and_mixed_variance(agency, scanner, site, read
     assert report.workers[0].days[0].reading == reading
 
 
+def no_out_punch(source):
+    return HoursRecord(source, "w", D1, 0.0, "missing out-punch")
+
+
+@pytest.mark.parametrize("scanner,site", [
+    ([no_out_punch(SCANNER)], None),                     # classified alone: agency over-reported
+    ([no_out_punch(SCANNER)], [no_out_punch(SITE)]),     # classified alone: claimed but unrecorded
+    ([rec(SCANNER, "w", D1, 8)], [no_out_punch(SITE)]),  # classified alone: present but not badged at site
+])
+def test_in_punch_without_an_out_punch_is_incomplete_not_a_variance(scanner, site):
+    # The row proves the worker punched in; its 0.0 hours are unknown, not evidence against the agency.
+    # D2 is complete in every source, so it must still be classified.
+    agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8)]
+    scanner = scanner + [rec(SCANNER, "w", D2, 8)]
+    site = None if site is None else site + [rec(SITE, "w", D2, 8)]
+    report = reconcile(agency, scanner, site, D1, D2)
+    days = {d.day: d.reading for d in report.workers[0].days}
+    assert days == {D1: "incomplete punch; verify before disputing", D2: "clean"}, "only the noted day is held back"
+    assert report.disputed == report.workers, "not clean, so it still reaches a person"
+
+
 def test_split_shift_punches_sum_and_days_outside_the_period_are_excluded():
     agency = [rec(AGENCY, "w", D1, 8), rec(AGENCY, "w", D2, 8), rec(AGENCY, "w", D3, 8)]
     # Out for lunch and back in is two punch pairs on one day.
@@ -311,6 +413,19 @@ def test_agency_row_matching_on_name_alone_is_given_no_hours(tmp_path, populated
     records, unresolved = read_agency_report(csv_path, registry)
     assert records == []
     assert [(u.line, u.reason) for u in unresolved] == [(2, "identity weak_name")]
+
+
+def test_agency_row_with_an_incompatible_name_on_a_held_phone_is_given_no_hours(tmp_path, populated):
+    _, registry, _, _ = populated
+    csv_path = tmp_path / "agency.csv"
+    csv_path.write_text(
+        "First Name,Last Name,Phone,Email,Date,Hours\n"
+        "Maria,Ruiz,(832) 555-0214,,2024-07-15,8\n"
+    )
+    # Same rule as the roster: Tomas's phone does not make Maria's hours his.
+    records, unresolved = read_agency_report(csv_path, registry)
+    assert records == []
+    assert [(u.line, u.reason) for u in unresolved] == [(2, "identity conflict")]
 
 
 def test_short_agency_row_is_unresolved_and_the_rest_of_the_file_is_read(tmp_path, populated):

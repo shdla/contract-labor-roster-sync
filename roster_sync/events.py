@@ -159,20 +159,25 @@ class WebhookEventSender:
 
     def send(self, event: Event) -> None:
         body, headers = self.signed_request(event)
-        last = None
         for attempt in range(1, self.max_attempts + 1):
-            response = self.session.post(self.url, data=body, headers=headers, timeout=15)
-            if response.status_code in RETRY_STATUSES and attempt < self.max_attempts:
+            try:
+                status = self.session.post(self.url, data=body, headers=headers, timeout=15).status_code
+            except OSError as exc:
+                # requests.RequestException, urllib.error.URLError, TimeoutError and ConnectionError all
+                # subclass OSError, so requests is not imported; a library whose errors do not needs its own adapter.
+                outcome = f"{type(exc).__name__}: {exc}"
+            else:
+                if status < 300:
+                    return
+                outcome = f"status {status}"
+                if status not in RETRY_STATUSES:
+                    break
+            if attempt < self.max_attempts:
                 delay = self.backoff_seconds * (2 ** (attempt - 1))
-                log.warning("webhook post -> %s; retry %d in %.1fs", response.status_code, attempt, delay)
+                log.warning("webhook post -> %s; retry %d in %.1fs", outcome, attempt, delay)
                 self._sleep(delay)
-                last = response
-                continue
-            if response.status_code >= 300:
-                raise DeliveryError(f"webhook post failed: {response.status_code}")
-            return
-        raise DeliveryError(f"webhook post failed after {self.max_attempts} attempts"
-                            f" (last status {last.status_code if last else 'n/a'})")
+        # DeliveryError is what emit_diff isolates, so a timeout fails one event and not the batch.
+        raise DeliveryError(f"webhook post failed after {attempt} attempt(s): {outcome}")
 
 
 # -- emit -------------------------------------------------------------------

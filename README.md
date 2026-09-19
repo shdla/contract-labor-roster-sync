@@ -5,7 +5,7 @@ reconciliation for a contingent workforce whose only system of record is a
 weekly spreadsheet.
 
 Python · SQLite · OAuth 2.0 client credentials · REST · HMAC-signed webhooks ·
-idempotent sync · three-way data reconciliation · 123 tests
+idempotent sync · three-way data reconciliation · 198 tests
 
 ## Scenario
 
@@ -48,10 +48,23 @@ would mean the identifier changes whenever the source value changes, which
 defeats the purpose. Observed phones and emails accumulate as aliases, so a
 worker stays matchable after a phone change.
 
-**Matching is a cascade, and only strong signals merge automatically.**
-Phone match, then email match, then name. A name-only match is returned as
-`WEAK_NAME` and routed to human review rather than applied. Merging two
-people is a materially worse outcome than carrying a duplicate for a day.
+**Matching is a cascade, and phone or email merges automatically only when
+the name is compatible.** Phone match, then email match, then name.
+Compatible means one part of the name is identical and the other is within
+two single-character edits of the stored one, after normalization, so
+`Marcuss Webb` on Marcus Webb's phone is applied as a typo. Any other name on
+a held identifier goes to review as a `CONFLICT` that carries the holder, who
+still counts as seen. `Maria Ruiz` on Tomas Ruiz's phone is a relative on a
+household phone and `Danielle Smith` on Danielle Okonkwo's phone is a
+marriage, and the names alone cannot tell the two apart; confirming the
+marriage applies the rename, and the row matches strongly from then on. A
+name-only match is returned as `WEAK_NAME` and routed to human review rather
+than applied. Merging two people is a materially worse outcome than carrying
+a duplicate for a day. Two limits are known. One identifier has one owner, so
+a row on a shared phone with no identifier of its own cannot be onboarded
+until the agency supplies one. And a near name reads as a typo: `Mario Lopez`
+on Maria Lopez's phone is one edit away and is applied, unless both rows are
+in the same file, where the second goes to review.
 
 **Conflicting signals escalate rather than resolve by precedence.** When a
 phone matches one worker and the name matches another — a reassigned mobile
@@ -70,17 +83,31 @@ acted on immediately: onboarding somebody a day early costs far less than
 somebody arriving unable to work.
 
 **An unresolved flag never deactivates anyone.** A row waiting for human
-review still counts its candidate worker as seen, so a question nobody has
-answered yet cannot quietly age somebody into a leaver.
+review still counts its candidate workers as seen for that roster period, so
+a question nobody has answered yet cannot quietly age somebody into a leaver,
+in that run or a later one. None of the row's data is applied. The protection
+lasts as long as the row keeps appearing and no longer, so an ignored queue
+cannot keep a departed worker's badge active. The cost is that `last_seen`
+means the last possible sighting: if the reviewer later rejects the match,
+the original worker's deactivation is delayed by at most the flagged periods,
+which is the fail-safe direction.
 
 **A review decision changes the data, not a status column.** Confirming that
 a flagged row belongs to an existing worker attaches the new phone or email
 to that worker permanently, so the same row matches on a strong signal next
 week and never reaches the queue again. Rejecting creates a second worker
-deliberately, with the same effect. A queue that cannot be cleared is an
+deliberately, from the identifiers on the row that nobody else holds, with
+the same effect. An identifier somebody already holds, a household phone or
+an agency dispatch address, stays with that worker, and a reject with nothing
+left to create the worker from is refused. One limit is known: while the
+agency keeps a held identifier on the new worker's row, the row's phone and
+email point at two workers, so it escalates again each week. Both workers
+count as seen and neither is changed; the remedy is the agency's file, not a
+rule that picks a winner. A queue that cannot be cleared is an
 alert, and people stop reading alerts. Decisions record who made them and
 when, because deactivating somebody's site access on a judgment call is the
-kind of thing that gets asked about later.
+kind of thing that gets asked about later. A decided flag cannot be decided
+again, so that record is never overwritten.
 
 **The eligibility gate blocks on uncertainty.** A worker whose role could
 not be mapped is blocked, never defaulted to the least-demanding role. An
@@ -88,9 +115,12 @@ unmapped role means the requirements are unknown, and guessing in the
 permissive direction is how somebody ends up on a forklift without a
 certificate. Missing or expired credentials block; a credential inside the
 warning window clears the worker but is reported, so renewals get scheduled
-before they become a block. Credential records are append-only — a renewal
-is a new row, and the gate takes the latest expiry per kind — so the history
-of what somebody held and when is never overwritten.
+before they become a block. A record dated after the evaluation date is not
+held yet and reads as missing: an orientation booked for Thursday clears
+nobody on Tuesday. Credential records are append-only — a renewal is a new
+row, and the gate takes the latest expiry per kind among the records already
+in effect — so the history of what somebody held and when is never
+overwritten.
 
 **Provisioning is idempotent by state comparison, not by hope.** The last
 state pushed for each worker is recorded, so a nightly run against an
@@ -102,11 +132,12 @@ state, so the next run tries again rather than believing a lie.
 
 **The access system is reached through an adapter.** An HTTP implementation
 authenticates with OAuth 2.0 client credentials, caches the token until
-shortly before expiry, and retries 429 and 5xx with exponential backoff. An
-in-memory implementation covers tests, demos, and the real case where the
-customer's security team has not approved API access yet. The sync logic is
-identical either way: design for the access the customer will actually
-grant, and swap the adapter when better access lands.
+shortly before expiry, and retries 429, 5xx and transport errors (timeout,
+connection reset) with exponential backoff. An in-memory implementation
+covers tests, demos, and the real case where the customer's security team
+has not approved API access yet. The sync logic is identical either way:
+design for the access the customer will actually grant, and swap the adapter
+when better access lands.
 
 **Hours are reconciled three ways, not two.** Two sources show that the
 numbers disagree; three show which one is wrong. Agency over-reporting,
@@ -119,7 +150,13 @@ dispute can be named to a date instead of argued as a total.
 `(kind, value)` in `worker_identifiers` means a phone or email can only point
 at one worker. An attempt to merge a flagged row onto a worker who does not
 own its identifier is refused rather than silently splitting a person across
-two records.
+two records. A recycled number is the case where the move is right: the
+previous holder has left and the carrier has reissued the number. The
+reviewer says so explicitly, `confirm(..., transfer=True)`, and the identifier
+is taken from the previous holder, deleted and re-inserted under the
+confirmed worker in one transaction, and logged in `identifier_transfers`
+against the review that authorized it. Nothing moves an identifier on its
+own.
 
 **Returning workers are not new hires.** A rolled-off worker who reappears
 reactivates under the original identifier, preserving credential history.
@@ -130,24 +167,40 @@ is a change to `config/roles.yaml`, not to code. Header spellings are one
 table in `ingest.py` (`DEFAULT_HEADER_ALIASES`), overridable per call through
 `read_roster`'s `header_aliases` argument. An unrecognized role returns
 `None` rather than defaulting to the least-privileged role, and nothing is
-raised: a new worker with no mapped role is blocked by the gate, and an
-existing worker keeps the last mapped role.
+raised. `read_roster` lists each one in `IngestReport.unmapped_roles` as the
+spreadsheet row and the text the agency wrote; the text is reported for that
+run and never stored. On a roster row that is applied, a role cell the map
+cannot read sets the worker's role to `None`, new worker or known, and
+records the change for a known one, so the gate blocks with `role not mapped`
+whatever credentials the old role had earned. An empty role cell, or a
+placeholder such as `n/a`, leaves the role unchanged. The operational
+consequence is deliberate: when the agency changes how it spells a role,
+every worker on that spelling is blocked, and the next access sync revokes
+the badge, until the alias is added to `config/roles.yaml` and the file is
+processed again. A row held for review applies nothing, and the marker is not
+stored with the flag, so a confirmed flag leaves the role alone until the
+next file, or a rerun of that one, matches the row on the attached identifier.
 
 **Normalization refuses rather than guesses.** A phone of the wrong length,
 a value of `n/a`, a string that is not email-shaped — all become `None`. A
 wrong normalization silently merges two people; an absent value does not.
+Name cells are checked against a shorter placeholder list than contact
+cells, because `Na` and `X` are placeholders in a phone column and real
+names in a name column, and a generational suffix is dropped only when a
+surname is left without it, so a worker whose last name is `V` is not
+rejected every week.
 
 ## Layout
 
 ```
 roster_sync/
-  normalize.py   phone, email, name and role normalization
+  normalize.py   phone, email, name and role normalization; name compatibility
   models.py      RosterRow, Worker, MatchResult, RosterDiff
   ingest.py      Excel parsing with header detection and column mapping
   identity.py    WorkerRegistry and the matching cascade
   diff.py        joiners, leavers, changes, review queue
   store.py       SQLite persistence: workers, periods, review queue,
-                 credentials, access state, badge map
+                 identifier transfers, credentials, access state, badge map
   review.py      confirm / reject resolution of flagged rows
   credentials.py credential records and the eligibility gate
   provisioning.py access-system adapters, OAuth client, idempotent sync
@@ -156,7 +209,8 @@ roster_sync/
 config/roles.yaml    role aliases and per-role credential requirements
 samples/             sample-data generators, an end-to-end demo, and
                      send_test_event.py for signed webhook test events
-tests/               123 tests covering normalization, matching, diffing,
+docs/screenshots/    the companion Workato recipe: canvas, jobs, lookup tables
+tests/               198 tests covering normalization, matching, diffing,
                      persistence, rerun safety, review resolution, the
                      eligibility gate, provisioning, reconciliation and
                      event emission
@@ -169,7 +223,7 @@ nothing about it, so the matching logic stays testable in memory.
 
 ```bash
 pip install -r requirements.txt        # Python 3.9 or newer
-python -m pytest tests/ -q            # 123 tests
+python -m pytest tests/ -q            # 198 tests
 python samples/run_pipeline.py        # end-to-end walkthrough
 python samples/send_test_event.py --worker 2 --dry-run   # print a signed event, send nothing
 
@@ -180,7 +234,10 @@ python samples/make_hours_samples.py  # generate the agency hours file
 
 `run_pipeline.py` processes two roster files, grants credentials, runs the
 eligibility gate, provisions access twice to show the second run making no
-calls, and reconciles a pay period across three hours sources.
+calls, reconciles a pay period across three hours sources, and emits each
+week's `worker.joined` events to an in-memory sender. It then reruns the
+second week against the registry reloaded from the store and compares the
+event ids with the first pass.
 
 Without `--dry-run`, `send_test_event.py` posts to `ROSTER_WEBHOOK_URL` and
 signs with `ROSTER_SIGNING_SECRET` (default `dev-secret`). The HTTP adapters
@@ -194,7 +251,9 @@ rather than creating a duplicate worker. The eligibility gate blocks one
 worker with the reason stated. Provisioning makes seven API calls on the
 first run and none on the rerun. The reconciliation distinguishes hours the
 agency over-reported from hours worked at the work area that were never
-badged at the gate.
+badged at the gate. Event emission sends one `worker.joined` per joiner, and
+the rerun of week two sends the same two ids again, which is what lets the
+receiver discard them.
 
 Output of `python samples/run_pipeline.py`:
 
@@ -249,11 +308,22 @@ roster_week2.xlsx  header row 3  8 rows  rerun=False
       2024-07-16  agency over-reported  (agency 8.0, scanner 6.0, site 6.03)
   Tomas Ruiz             agency 16.00  scanner 16.00  site 16.34
   UNRESOLVED [site] badge BADGE-UNKNOWN not mapped
+
+====================================================================
+6. Event emission to the iPaaS
+====================================================================
+  2024-07-08  rerun=False  {'sent': 6, 'failed': 0}
+  2024-07-15  rerun=False  {'sent': 2, 'failed': 0}
+  2024-07-15  rerun=True   {'sent': 2, 'failed': 0}  ids identical on rerun: True
 ```
 
 The single `deactivated` on the first run is a blocked worker who was never
 provisioned, so the state is recorded without a request, which is why eight
 transitions make seven calls.
+
+Step 6 prints a comparison and not the event ids themselves. Each id hashes
+a worker id, and worker ids are issued fresh on every demo run, so printed
+ids would differ on every run while the comparison does not.
 
 ## Spreadsheet defects handled
 
@@ -264,6 +334,12 @@ rows, trailing notes below the data, phone numbers stored as text in three
 formats and as a float by Excel, extensions appended to numbers, missing
 emails, generational suffixes appearing intermittently, middle names
 appearing intermittently, and `Last, First` collapsed into one cell.
+
+What it refuses, on purpose, is a header row with no recognized first-name or
+last-name column, or with neither a phone nor an email column. `read_roster`
+raises and names the header cells it found. Parsed anyway, such a file would
+reject every row and still count as a processed period, and the second such
+week would turn every active worker into a leaver.
 
 ## Scope boundary
 
@@ -279,10 +355,20 @@ problems rather than something to hand-roll.
 becomes a `worker.joined` webhook delivery: HMAC-SHA256-signed, and carrying
 a dedup id that is a UUIDv5 of `(event type, worker id, roster period)`
 rather than a random value. A retry can double-send, so delivery is
-at-least-once within a run, and every retry carries the same id instead of
-minting a new one. A rerun of an already-processed period does not re-emit
-today: it reports no joiners, so an event that exhausted its retries is
-listed in `EmitOutcome.failed` and is not sent again. The receiving recipe
+at-least-once, and every retry carries the same id instead of minting a new
+one. That holds across runs as well as within one. Joiner status is derived
+from `first_seen` being the roster period, the way absence is derived from
+the periods processed, so a rerun of an already-processed period lists the
+same joiners and re-emits the same ids. The rerun is the resend path:
+`EmitOutcome.failed` is reported and not persisted, so an event that
+exhausted its retries goes out again when the period is run again, along
+with the ones already delivered, which the receiver discards by id. A worker
+created by rejecting a review flag is created outside any diff, so the
+caller of `reject()` emits `worker_joined_event` for the flag's period. A
+rerun of that period derives the same id only when the row carries no
+identifier another worker holds; otherwise the row is flagged again, the
+rerun lists no joiner for it, and the caller of `reject()` is the only
+emitter, so it retries its own failed send. The receiving recipe
 reacts to that id being new or repeated; nothing about *how* it reacts
 (which lookup table, what the notification says, where the error monitor
 wraps) is decided in Python. That split is deliberate: an agency roster is
@@ -306,3 +392,52 @@ compact separators.
   no `sha256=` prefix.
 - A 429, 500, 502, 503 or 504 is retried, up to four attempts in total, with
   the same id each time, so the receiver must deduplicate on `X-Dedup-Id`.
+  A transport error (timeout, connection reset) is retried the same way: the
+  post may have arrived before the connection dropped, which is the same
+  reason to deduplicate.
+
+## The Workato half
+
+Recipe 1 receives `worker.joined` and owns the people side: it picks the
+next orientation session with capacity, looks up what the role requires,
+books the seat and notifies the worker.
+
+- **Guard.** Step 2 stops any event whose `type` is not `worker.joined`.
+- **Dedup.** Delivery from this repository is at-least-once and the Workato
+  webhook gateway does not deduplicate, so the recipe does. Steps 3 to 6
+  search a `processed_events` lookup table for the `event_id` (the same
+  value as `X-Dedup-Id`), stop the job on a hit, and otherwise write the id
+  before any side effect. The check and the write are separate steps. That
+  is safe at the recipe's concurrency of 1, the Workato default, where jobs
+  run one at a time; a higher setting would need an atomic claim.
+- **Booking.** Steps 8 to 10 take the first `orientation_sessions` row whose
+  `status` is `open`, read `role_requirements` for the role, and increment
+  `booked`, setting `status` to `full` at capacity. The `status` column
+  exists because lookup-table search is exact-match only, so "capacity
+  remaining" cannot be a search condition. Search returns rows in insertion
+  order, so sessions are inserted chronologically.
+- **Failure.** An error monitor wraps the booking block. On error it does
+  not retry, because the booking update is not idempotent, and it emails a
+  person. The id is already in the ledger by then, so a resend of that event
+  is discarded: a failed booking is finished by a person, never booked
+  twice. Workato lists a job whose error was handled as Successful; the
+  failed step is visible inside the job.
+- **Not built.** The recipe does not yet verify `X-Signature-256`. Email
+  stands in for SMS, which is the real channel for this population; the
+  delivery step is isolated so it can be swapped. Reminders, escalation and
+  the supervisor digest belong to this half and are not built.
+
+| | |
+|---|---|
+| ![Recipe canvas](docs/screenshots/02-recipe-canvas.png) | ![Job history](docs/screenshots/03-job-history.png) |
+| The recipe: type guard, dedup ledger, monitored booking block, error branch | Job history, including the identical event sent twice |
+| ![Duplicate stopped](docs/screenshots/05-dedup-stopped-job.png) | ![Error monitor](docs/screenshots/07-error-monitor.png) |
+| Second delivery of the same event: ledger hit, job stops at step 5 in 81 ms | Forced failure (no open session): caught at step 10, a person alerted, not retried |
+
+Also: [the recipe in its project](docs/screenshots/01-project-recipe.png),
+[a full run with the rendered notification](docs/screenshots/04-successful-job.png),
+and the lookup tables:
+[orientation sessions](docs/screenshots/08-orientation-sessions.png),
+[role requirements](docs/screenshots/09-role-requirements.png),
+[processed events ledger](docs/screenshots/06-processed-events.png).
+Send a signed test event with `samples/send_test_event.py`.

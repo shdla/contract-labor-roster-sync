@@ -1,6 +1,6 @@
 """SQLite persistence for everything that must survive between runs: workers
-and their identifiers, roster periods, the review queue, credentials, access
-state and the badge map.
+and their identifiers, roster periods, the review queue and the identifier
+transfers it authorized, credentials, access state and the badge map.
 
 State has to survive between runs for three reasons. The registry is only
 useful if this week's file can be compared against last week's population.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -80,6 +81,19 @@ CREATE TABLE IF NOT EXISTS pending_reviews (
 CREATE INDEX IF NOT EXISTS idx_reviews_open
     ON pending_reviews (decision) WHERE decision IS NULL;
 
+-- An identifier a reviewer moved from one worker to another, by the review
+-- that authorized it. worker_identifiers holds only the current owner, so
+-- without this the previous one is unrecoverable. Append-only, and written
+-- in the transaction that moves the identifier: no move without its record.
+CREATE TABLE IF NOT EXISTS identifier_transfers (
+    review_id      TEXT NOT NULL REFERENCES pending_reviews(review_id),
+    kind           TEXT NOT NULL,
+    value          TEXT NOT NULL,
+    from_worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+    to_worker_id   TEXT NOT NULL REFERENCES workers(worker_id),
+    transferred_at TEXT NOT NULL
+);
+
 -- Credential records are append-only. A renewal is a new row, never an
 -- update to the old one, so the history of what somebody held and when
 -- survives. The eligibility gate picks the latest expiry per kind.
@@ -133,7 +147,11 @@ def _as_date(text: str | None) -> date | None:
 
 @dataclass
 class PendingReview:
-    """A flagged row awaiting a human decision, rehydrated from storage."""
+    """A flagged row rehydrated from storage, with the decision once a human has made one.
+
+    The decision fields are exposed so the audit record can be read back and
+    so review.py can refuse to decide the same flag twice.
+    """
 
     review_id: str
     as_of: date
@@ -141,6 +159,10 @@ class PendingReview:
     confidence: MatchConfidence
     note: str
     candidate_ids: list[str]
+    decision: str | None = None
+    decided_worker_id: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
 
     def describe(self, registry: WorkerRegistry) -> str:
         name = self.row.name.display if self.row.name else "(unnamed)"
@@ -154,6 +176,17 @@ class PendingReview:
         # .value is explicit: an f-string renders a str-mixin enum member as "weak_name" on
         # Python 3.9 but as "MatchConfidence.WEAK_NAME" from 3.11.
         return f"[{self.confidence.value}] {name} / {contact}{against} — {self.note}"
+
+
+@dataclass(frozen=True)
+class IdentifierTransfer:
+    """One phone or email a confirmed review took from one worker and gave to another."""
+
+    review_id: str
+    kind: str
+    value: str
+    from_worker_id: str
+    to_worker_id: str
 
 
 class Store:
@@ -206,9 +239,39 @@ class Store:
 
         return registry
 
-    def save_registry(self, registry: WorkerRegistry) -> None:
-        """Write the whole registry back. Idempotent by construction."""
+    def save_registry(self, registry: WorkerRegistry,
+                      transfers: Sequence[IdentifierTransfer] = ()) -> None:
+        """Write workers, identifiers and processed periods back in one transaction.
+
+        Idempotent by construction. Periods commit with the workers whose
+        last_seen they age, so leaver detection survives a restart even if
+        Store.record_period is never called.
+
+        An identifier already stored under another worker raises, and the
+        transaction rolls the whole save back. This is the backstop: by then
+        the in-memory registry is already wrong, so review.py refuses first.
+
+        transfers are the identifiers review.confirm moved. Each stored row
+        is deleted and logged here, in the transaction that inserts it under
+        its new owner. Nothing else deletes an identifier row, so a move
+        nobody named still raises.
+        """
         with self._connection:
+            for moved in transfers:
+                # Only the row of the worker it was taken from: any other stored owner still raises below.
+                self._connection.execute(
+                    "DELETE FROM worker_identifiers WHERE kind = ? AND value = ? AND worker_id = ?",
+                    (moved.kind, moved.value, moved.from_worker_id),
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO identifier_transfers
+                        (review_id, kind, value, from_worker_id, to_worker_id, transferred_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (moved.review_id, moved.kind, moved.value,
+                     moved.from_worker_id, moved.to_worker_id, _now()),
+                )
             for worker in registry.workers:
                 self._connection.execute(
                     """
@@ -235,20 +298,40 @@ class Store:
                 )
                 pairs = [("phone", v) for v in worker.phones] + [("email", v) for v in worker.emails]
                 for kind, value in pairs:
+                    held = self._connection.execute(
+                        "SELECT worker_id FROM worker_identifiers WHERE kind = ? AND value = ?",
+                        (kind, value),
+                    ).fetchone()
+                    if held is not None and held["worker_id"] != worker.worker_id:
+                        raise sqlite3.IntegrityError(
+                            f"{kind} {value} belongs to worker {held['worker_id']}; "
+                            f"refusing to attach it to worker {worker.worker_id}"
+                        )
                     self._connection.execute(
                         """
                         INSERT INTO worker_identifiers (kind, value, worker_id)
                         VALUES (?, ?, ?)
-                        ON CONFLICT(kind, value) DO UPDATE SET worker_id = excluded.worker_id
+                        ON CONFLICT(kind, value) DO NOTHING
                         """,
                         (kind, value, worker.worker_id),
                     )
+            for period in registry.periods:
+                self._connection.execute(
+                    "INSERT INTO roster_periods (as_of, processed_at) VALUES (?, ?)"
+                    " ON CONFLICT(as_of) DO NOTHING",
+                    (period.isoformat(), _now()),
+                )
 
     # -- roster periods ---------------------------------------------------
 
     def record_period(self, as_of: date, source_path: str | None = None,
                       digest: str | None = None) -> bool:
-        """Record a processed roster period. False if it was already recorded."""
+        """Record a processed roster period with its file hash and path. False if already recorded.
+
+        Call it before save_registry for that period. save_registry writes the
+        period row too, without the file metadata, and an existing row is left
+        untouched: a later call here returns False and stores no hash or path.
+        """
         with self._connection:
             cursor = self._connection.execute(
                 "INSERT INTO roster_periods (as_of, file_hash, source_path, processed_at)"
@@ -321,15 +404,28 @@ class Store:
 
     def record_decision(self, review_id: str, decision: str,
                         worker_id: str | None, decided_by: str) -> None:
+        """Record who decided a flag and when. The first decision stands: the
+        WHERE clause keeps a later call from overwriting the audit record."""
         with self._connection:
             self._connection.execute(
                 """
                 UPDATE pending_reviews
                    SET decision = ?, decided_worker_id = ?, decided_by = ?, decided_at = ?
-                 WHERE review_id = ?
+                 WHERE review_id = ? AND decision IS NULL
                 """,
                 (decision, worker_id, decided_by, _now(), review_id),
             )
+
+    def transfers_for(self, review_id: str) -> list[IdentifierTransfer]:
+        """The identifiers a review's confirm moved between workers, oldest first."""
+        rows = self._connection.execute(
+            "SELECT * FROM identifier_transfers WHERE review_id = ? ORDER BY rowid", (review_id,)
+        ).fetchall()
+        return [
+            IdentifierTransfer(r["review_id"], r["kind"], r["value"],
+                               r["from_worker_id"], r["to_worker_id"])
+            for r in rows
+        ]
 
     # -- credentials ------------------------------------------------------
 
@@ -434,4 +530,8 @@ class Store:
             confidence=MatchConfidence(row["confidence"]),
             note=row["note"] or "",
             candidate_ids=[i for i in (row["candidates"] or "").split(",") if i],
+            decision=row["decision"],
+            decided_worker_id=row["decided_worker_id"],
+            decided_by=row["decided_by"],
+            decided_at=row["decided_at"],
         )

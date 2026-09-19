@@ -5,7 +5,9 @@ title row above the headers, blank spacer rows, trailing notes below the
 data, and columns whose headers differ week to week. This module locates the
 header row rather than assuming row 1, maps columns through header aliases
 rather than position, and reports what it could not understand instead of
-failing on the first bad cell.
+failing on the first bad cell. A header it cannot read is the exception: that
+raises, because a file with no name or contact column rejects every row and
+still counts as a processed period.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from openpyxl import load_workbook
 
 from .models import RosterRow
 from .normalize import (
+    PLACEHOLDER_TOKENS,
     normalize_email,
     normalize_name,
     normalize_phone,
@@ -45,9 +48,11 @@ class IngestReport:
     sheet: str
     header_row: int
     column_map: dict[str, int]
-    missing_fields: list[str]
     rows_read: int
     rows_blank: int
+    # (source_row, text as written) for each role cell the role map could not
+    # read. Reported for this run only; the text is never stored.
+    unmapped_roles: list[tuple[int, str]]
 
 
 def _cell_text(value: object) -> str:
@@ -96,11 +101,28 @@ def read_roster(
     workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
     worksheet = workbook[sheet] if sheet else workbook[workbook.sheetnames[0]]
 
+    # Everything needed is read before anything can raise, so a rejected file
+    # does not leak the read-only handle.
     grid = list(worksheet.iter_rows(values_only=True))
+    sheet_title = worksheet.title
+    workbook.close()
+
     header_row, column_map = find_header_row(grid, aliases)
-    missing = [f for f in REQUIRED_FIELDS if f not in column_map]
+
+    # Fail closed: without these columns no row is usable, the period is still
+    # recorded, and the second such week ages every active worker into a leaver.
+    unmapped = [f for f in REQUIRED_FIELDS if f not in column_map]
+    if "phone" not in column_map and "email" not in column_map:
+        unmapped.append("phone or email")
+    if unmapped:
+        found = [str(cell).strip() for cell in grid[header_row] if _cell_text(cell)]
+        raise ValueError(
+            f"header row {header_row + 1} has no column for {', '.join(unmapped)}; "
+            f"headers found: {found}; extend the header aliases or pass header_aliases"
+        )
 
     rows: list[RosterRow] = []
+    unmapped_roles: list[tuple[int, str]] = []
     blank = 0
 
     for offset, raw_row in enumerate(grid[header_row + 1:], start=header_row + 2):
@@ -114,25 +136,32 @@ def read_roster(
                 return None
             return raw_row[column]
 
+        role_cell = value("role")
+        role = normalize_role(role_cell, role_map)
+        # A placeholder counts as an empty cell, as it does in normalize_role:
+        # it names no role, and no alias in the role map would fix it.
+        role_unmapped = role is None and _cell_text(role_cell) not in PLACEHOLDER_TOKENS
+        if role_unmapped:
+            unmapped_roles.append((offset, str(role_cell).strip()))
+
         rows.append(
             RosterRow(
                 source_row=offset,
                 name=normalize_name(value("first_name"), value("last_name")),
                 phone=normalize_phone(value("phone")),
                 email=normalize_email(value("email")),
-                role=normalize_role(value("role"), role_map),
+                role=role,
+                role_unmapped=role_unmapped,
             )
         )
 
-    workbook.close()
-
     report = IngestReport(
         path=str(path),
-        sheet=worksheet.title,
+        sheet=sheet_title,
         header_row=header_row + 1,
         column_map=column_map,
-        missing_fields=missing,
         rows_read=len(rows),
         rows_blank=blank,
+        unmapped_roles=unmapped_roles,
     )
     return rows, report
