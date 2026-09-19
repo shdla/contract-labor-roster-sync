@@ -8,12 +8,12 @@ against an unchanged population makes zero calls.
 
 The access system is reached through a Provisioner adapter. The HTTP
 implementation authenticates with OAuth 2.0 client credentials, caches the
-token until shortly before expiry, retries on 429, 5xx and transport errors
-with exponential backoff, and sends the worker id as an idempotency key so a
-retried request cannot create a duplicate badge. An in-memory implementation
-exists for tests and demos, and for the case where the customer's security
-team has not yet approved API access — the sync logic is identical either
-way.
+token until shortly before expiry, retries on 429, 500, 502, 503, 504 and
+transport errors with exponential backoff, and sends the worker id as an
+idempotency key so a retried request cannot create a duplicate badge. An
+in-memory implementation exists for tests and demos, and for the case where
+the customer's security team has not yet approved API access — the sync
+logic is identical either way.
 """
 
 from __future__ import annotations

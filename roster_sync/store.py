@@ -41,10 +41,11 @@ CREATE TABLE IF NOT EXISTS workers (
     active      INTEGER NOT NULL DEFAULT 1
 );
 
--- One row per identifier ever observed for a worker. The primary key on
--- (kind, value) is what enforces that a phone or email can only point at one
--- worker; an attempt to attach a known identifier to a second worker fails
--- loudly instead of silently splitting a person in two.
+-- One row per identifier a worker currently holds. A transfer deletes the
+-- previous holder's row; identifier_transfers keeps the record. The primary
+-- key on (kind, value) is what enforces that a phone or email can only point
+-- at one worker; an attempt to attach a known identifier to a second worker
+-- fails loudly instead of silently splitting a person in two.
 CREATE TABLE IF NOT EXISTS worker_identifiers (
     kind      TEXT NOT NULL,
     value     TEXT NOT NULL,

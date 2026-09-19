@@ -132,8 +132,8 @@ state, so the next run tries again rather than believing a lie.
 
 **The access system is reached through an adapter.** An HTTP implementation
 authenticates with OAuth 2.0 client credentials, caches the token until
-shortly before expiry, and retries 429, 5xx and transport errors (timeout,
-connection reset) with exponential backoff. An in-memory implementation
+shortly before expiry, and retries 429, 500, 502, 503, 504 and transport
+errors (timeout, connection reset) with exponential backoff. An in-memory implementation
 covers tests, demos, and the real case where the customer's security team
 has not approved API access yet. The sync logic is identical either way:
 design for the access the customer will actually grant, and swap the adapter
@@ -145,6 +145,8 @@ hours claimed that nobody recorded, and presence at the work area that never
 badged at the gate are distinguishable readings rather than one undifferentiated
 variance. Day-level detail sits beneath the pay-period totals, so a
 dispute can be named to a date instead of argued as a total.
+A day with an in-punch and no out-punch is read as incomplete, hours unknown
+rather than zero, and is held back from dispute until verified.
 
 **Identifier ownership is enforced by the database.** The primary key on
 `(kind, value)` in `worker_identifiers` means a phone or email can only point
