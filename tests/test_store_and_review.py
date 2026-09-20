@@ -530,6 +530,31 @@ def test_store_deletes_an_identifier_row_only_for_the_worker_the_transfer_names(
     assert store.transfers_for(review_id) == [], "the log rolls back with the move it records"
 
 
+def test_store_keeps_neither_the_move_nor_its_log_when_the_log_cannot_be_written(store):
+    registry = store.load_registry()
+    week_1 = [row("Ana", "Reyes", "832.555.0111"), row("Ben", "Okafor", email="bo@example.com")]
+    compute_diff(registry, week_1, WEEK_1)
+    store.save_registry(registry)
+    ana, ben = registry.workers
+
+    moved = row("Ben", "Okafor", "832.555.0111")
+    (review_id,) = store.save_reviews([registry.match(moved)], WEEK_2)
+    registry.release(ana, moved)
+    registry.apply(MatchResult(row=moved, confidence=MatchConfidence.WEAK_NAME, worker=ben), WEEK_2)
+
+    # The first record is right and is written; the second names a worker who does not exist,
+    # so the log fails after the identifier row has already moved inside the transaction.
+    right = IdentifierTransfer(review_id, "phone", "+18325550111", ana.worker_id, ben.worker_id)
+    broken = IdentifierTransfer(review_id, "phone", "+18325550111", ana.worker_id, "no-such-worker")
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        store.save_registry(registry, [right, broken])
+
+    reloaded = store.load_registry()
+    assert reloaded.get(ana.worker_id).phones == {"+18325550111"}, "no move without its record"
+    assert reloaded.get(ben.worker_id).phones == set()
+    assert store.transfers_for(review_id) == [], "and no record without its move"
+
+
 def test_rejecting_a_row_on_a_shared_phone_creates_the_worker_from_its_own_email(tmp_path):
     path = tmp_path / "roster.db"
     household = [
